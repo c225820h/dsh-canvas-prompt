@@ -139,7 +139,7 @@ export function apply(ctx, config) {
 
   ctx.tools.register({
     name: 'canvas_prompt_config',
-    description: "Read the canvas bridge address, or save a new one into this plugin's settings so it survives restarts. The same value is editable in the DSH plugin settings form.",
+    description: "Read the canvas bridge address, or save a new one into this plugin's config so it survives restarts. There is no settings page: this tool and the profile patch are the two ways to change it.",
     parameters: {
       action: { type: 'string', enum: ['get', 'set', 'clear'], description: 'get shows the address and its source; set stores a new one; clear removes the saved value.' },
       bridge: { type: 'string', description: 'Required for set: the address to use, such as http://192.168.3.201:8799.' },

@@ -33,7 +33,9 @@ DSH 工具 canvas_prompt
 3. 环境变量 `CANVAS_BRIDGE_URL`
 4. 内置默认 `http://192.168.3.200:8799`
 
-改保存的地址：调用 `canvas_prompt_config`，`action: "set"`，`bridge: "http://192.168.3.201:8799"`。设置会写进插件目录下的 `config.json`，重启和换会话都保留。
+改保存的地址：调用 `canvas_prompt_config`，`action: "set"`，`bridge: "http://192.168.3.201:8799"`。设置写进 profile 的 `cordis.patch.yml`（`canvas-prompt` 条目的 `config.bridgeUrl`），是 volatile 字段，改完立即生效、重启后保留。
+
+本插件不带浏览器端设置页：DSH 只渲染插件自己注册的页面，而工作区链接形式的 bundle 无法可靠提供该页面，因此地址通过工具或 profile 配置修改。
 
 ## 使用前提
 

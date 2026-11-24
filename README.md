@@ -28,12 +28,21 @@ The bundle declares `@deepseek-ai/schemastery` as its only dependency; `npm inst
 
 ## Configure the canvas address
 
-The address is a normal plugin setting, not a constant:
+The address is a plugin config value, not a constant in code:
 
-- **DSH settings page** — the plugin's config form exposes `bridgeUrl`.
 - **Chat** — ask the agent: "把画布地址改成 http://192.168.3.201:8799" (tool `canvas_prompt_config`, `action: set`).
+- **Profile patch** — `~/.dsh/profiles/<profile>/cordis.patch.yml`:
 
-Resolution order: per-call `bridge` argument → `bridgeUrl` setting → `CANVAS_BRIDGE_URL` environment variable → built-in default.
+  ```yaml
+  - id: canvas-prompt
+    name: "@local/dsh-canvas-prompt"
+    config:
+      bridgeUrl: http://192.168.3.200:8799
+  ```
+
+The field is declared `.volatile()`, so a write applies without restarting the plugin. This bundle ships no browser-side settings page: DSH only renders a plugin page that the plugin itself registers, and a linked workspace bundle cannot reliably ship one, so the value is edited through the tool or the profile patch.
+
+Resolution order: per-call `bridge` argument → `bridgeUrl` config → `CANVAS_BRIDGE_URL` environment variable → built-in default.
 
 ## Tools
 
