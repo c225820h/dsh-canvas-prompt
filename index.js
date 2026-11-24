@@ -2,10 +2,10 @@
  * Canvas prompt bridge tools: send a prompt to the Infinite Canvas on the LAN,
  * where a canvas-side plugin writes it into the node the user selected.
  *
- * The bridge address lives in this plugin's Config, so it is editable in DSH's
- * plugin settings page instead of being hard-coded. Resolution order, first hit
- * wins: per-call `bridge` argument → Config `bridgeUrl` → CANVAS_BRIDGE_URL →
- * built-in default.
+ * The bridge address is a volatile Config field: it is editable while the plugin
+ * runs (settings form or the canvas_prompt_config tool) and read through its
+ * reference. Resolution order: per-call `bridge` argument → Config bridgeUrl →
+ * CANVAS_BRIDGE_URL → built-in default.
  *
  * @module @local/dsh-canvas-prompt
  */
@@ -19,12 +19,12 @@ export const inject = ['tools']
 
 const BUILTIN_BRIDGE = 'http://192.168.3.200:8799'
 
-/** Editable in DSH settings; empty means the built-in default. */
 export const Config = z.object({
   bridgeUrl: z
     .string()
     .description('画布提示词桥地址，例如 http://192.168.3.200:8799；留空使用内置默认。')
-    .default(''),
+    .default('')
+    .volatile(),
 })
 
 export function normalizeBridge(input) {
@@ -54,7 +54,11 @@ async function requestJson(url, init, timeoutMs = 8000) {
 
 /** Register the canvas prompt tools. */
 export function apply(ctx, config) {
-  const savedBridge = () => String((config && config.bridgeUrl) || '').trim()
+  function savedBridge() {
+    const field = config && config.bridgeUrl
+    const value = field && typeof field.get === 'function' ? field.get() : field
+    return String(value || '').trim()
+  }
 
   function resolveBridge(callArg) {
     const raw = String(callArg || '').trim()
@@ -69,7 +73,7 @@ export function apply(ctx, config) {
 
   ctx.tools.register({
     name: 'canvas_prompt',
-    description: 'Queue a prompt for the Infinite Canvas. A canvas-side plugin writes it into the node the user selected there; the user then runs the generation. The bridge address comes from this plugin\'s settings, so neither the user nor you need to know the host.',
+    description: "Queue a prompt for the Infinite Canvas. A canvas-side plugin writes it into the node the user selected there; the user then runs the generation. The bridge address comes from this plugin's settings, so neither the user nor you need to know the host.",
     parameters: {
       prompt: { type: 'string', required: true, description: 'Prompt text to write into the canvas node.' },
       target: { type: 'string', description: 'Optional node title or node id in the canvas. Omit to use the node the user selected in the bridge card.' },
@@ -135,7 +139,7 @@ export function apply(ctx, config) {
 
   ctx.tools.register({
     name: 'canvas_prompt_config',
-    description: 'Read the canvas bridge address, or save a new one into this plugin\'s settings so it survives restarts. The same value is editable in DSH settings.',
+    description: "Read the canvas bridge address, or save a new one into this plugin's settings so it survives restarts. The same value is editable in the DSH plugin settings form.",
     parameters: {
       action: { type: 'string', enum: ['get', 'set', 'clear'], description: 'get shows the address and its source; set stores a new one; clear removes the saved value.' },
       bridge: { type: 'string', description: 'Required for set: the address to use, such as http://192.168.3.201:8799.' },
@@ -154,23 +158,24 @@ export function apply(ctx, config) {
     },
     async execute(args) {
       const action = args && args.action ? args.action : 'get'
+      const entry = ctx.fiber && ctx.fiber.entry
+      const editor = ctx.get('configEditor')
+
       if (action === 'set') {
         const next = normalizeBridge(args && args.bridge)
-        const entry = ctx.fiber && ctx.fiber.entry
-        const editor = ctx.get('configEditor')
         if (entry === undefined || editor === undefined) {
           throw new Error('这个 profile 里不能保存配置；请在 DSH 设置页的插件配置里修改画布地址。')
         }
         await editor.edit(entry, (current) => ({ ...current, bridgeUrl: next }))
         return { bridge: next, source: 'config' }
       }
+
       if (action === 'clear') {
-        const entry = ctx.fiber && ctx.fiber.entry
-        const editor = ctx.get('configEditor')
         if (entry === undefined || editor === undefined) throw new Error('这个 profile 里不能保存配置。')
         await editor.edit(entry, (current) => ({ ...current, bridgeUrl: '' }))
         return { bridge: normalizeBridge(envBridge() || BUILTIN_BRIDGE), source: envBridge() ? 'env' : 'default' }
       }
+
       return { bridge: resolveBridge(''), source: bridgeSource() }
     },
   })
