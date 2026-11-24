@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Canvas prompt bridge">
+  <rect x="3" y="3" width="58" height="58" rx="14" fill="#1f6feb"/>
+  <path d="M14 20h24a5 5 0 0 1 5 5v9a5 5 0 0 1-5 5H26l-7 6v-6h-5a5 5 0 0 1-5-5v-9a5 5 0 0 1 5-5Z" fill="#ffffff" opacity="0.92"/>
+  <path d="M41 32h12" stroke="#1f6feb" stroke-width="4" stroke-linecap="round"/>
+  <path d="M49 26l7 6-7 6" fill="none" stroke="#1f6feb" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

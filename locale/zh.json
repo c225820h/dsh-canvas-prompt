@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "画布提示词桥",
+    "description": "把提示词发到局域网内 Infinite Canvas 的提示词桥：画布侧的插件会把它写进你在画布上选中的节点，你只需要点生成。",
+    "detail": "docs/DETAIL.md"
+  }
+}

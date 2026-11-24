@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Canvas prompt bridge",
+    "description": "Queue prompts for the Infinite Canvas on the LAN. A canvas-side plugin writes each prompt into the node selected there, so the user only runs the generation.",
+    "detail": "docs/DETAIL.md"
+  }
+}
