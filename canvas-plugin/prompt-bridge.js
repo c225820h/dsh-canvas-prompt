@@ -1,14 +1,13 @@
-// 提示词桥（画布侧）：轮询 DSH 插件内置的邮筒，写入指定节点，可选自动生成。
-// 视觉：语义色（蓝=可操作 / 绿=已连接·自动 / 红=断开 / 琥珀=积压），分区浅底块增加层次。
-// 只依赖运行时保证提供的 antd Button / Select，其余用原生元素 + 内联样式。
+// 提示词桥（画布侧）：轮询 DSH 插件内置的邮筒，写入「连线指向」的节点，可选写入后自动生成。
+// 目标只用连线：把这张卡连到目标节点即可，不再有下拉框。
 export default function (runtime) {
     const { React, antd } = runtime;
     const h = React.createElement;
-    const { useEffect, useMemo, useRef, useState } = React;
-    const { Button, Select } = antd || {};
+    const { useEffect, useRef, useState } = React;
+    const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.1.0";
+    const VERSION = "2.3.0";
     const POLL_MS = 1500;
     const PAGE_HOST = (typeof window !== "undefined" && window.location && window.location.hostname) || "127.0.0.1";
     const DEFAULT_BASE = `http://${PAGE_HOST}:8799`;
@@ -95,13 +94,23 @@ export default function (runtime) {
         return GENERATION_MODES.has(meta.generationMode) ? meta.generationMode : "";
     }
 
-    function listTargets(nodes, selfId) {
-        return (Array.isArray(nodes) ? nodes : [])
-            .filter((node) => node && node.id !== selfId && !SKIP_TYPES.has(node.type))
-            .sort((a, b) => (a.position?.y || 0) - (b.position?.y || 0) || (a.position?.x || 0) - (b.position?.x || 0));
+    function supportsWrite(node) {
+        return Boolean(node) && !SKIP_TYPES.has(node.type);
     }
 
-    function matchTarget(nodes, hint) {
+    /** 画布上从这张卡连出去的下游节点，作为唯一目标来源。 */
+    function linkedTarget(ctx) {
+        let list = [];
+        try {
+            list = ctx.getDownstream?.() || [];
+        } catch {
+            list = [];
+        }
+        return list.filter(supportsWrite)[0] || null;
+    }
+
+    /** 按 id / 标题解一条消息里显式指定的目标（可选，用于临时改投）。 */
+    function pickByHint(nodes, hint) {
         const raw = String(hint || "").trim();
         if (!raw) return null;
         const lower = raw.toLowerCase();
@@ -115,60 +124,6 @@ export default function (runtime) {
 
     function patchFor(node, text) {
         return node && node.type === "text" ? { content: text } : { prompt: text };
-    }
-
-    function supportsWrite(node) {
-        return Boolean(node) && !SKIP_TYPES.has(node.type);
-    }
-
-    /** 距离某点最近的节点（用于标题重名时挑一个近的）。 */
-    function nearestTo(nodes, point) {
-        let best = null;
-        let bestDist = Infinity;
-        for (const node of nodes) {
-            const dx = (node.position?.x || 0) - (point?.x || 0);
-            const dy = (node.position?.y || 0) - (point?.y || 0);
-            const dist = dx * dx + dy * dy;
-            if (dist < bestDist) {
-                bestDist = dist;
-                best = node;
-            }
-        }
-        return best;
-    }
-
-    /** 从桥卡连出去的下游节点，优先作为目标。 */
-    function downstreamTarget(ctx, all) {
-        let list = [];
-        try {
-            list = ctx.getDownstream?.() || [];
-        } catch {
-            list = [];
-        }
-        const candidates = list.filter(supportsWrite);
-        if (!candidates.length) return null;
-        const known = new Set((all || []).map((node) => node.id));
-        return candidates.find((node) => known.has(node.id)) || candidates[0];
-    }
-
-    /** 标题匹配打分：精确 > 前缀 > 包含，重名时取离桥卡最近的。 */
-    function pickByHint(nodes, hint, origin) {
-        const raw = String(hint || "").trim();
-        if (!raw) return null;
-        const lower = raw.toLowerCase();
-        const byId = nodes.find((node) => node.id === raw);
-        if (byId) return byId;
-        const scored = nodes
-            .map((node) => {
-                const title = titleOf(node).toLowerCase();
-                const score = title === lower ? 3 : title.startsWith(lower) ? 2 : title.includes(lower) ? 1 : 0;
-                return { node, score };
-            })
-            .filter((item) => item.score > 0);
-        if (!scored.length) return null;
-        const top = Math.max(...scored.map((item) => item.score));
-        const winners = scored.filter((item) => item.score === top).map((item) => item.node);
-        return winners.length === 1 ? winners[0] : nearestTo(winners, origin);
     }
 
     /* ---------- 视觉零件 ---------- */
@@ -251,11 +206,7 @@ export default function (runtime) {
 
         const meta = ctx.node?.metadata || {};
         const bridgeBase = baseOf(ctx.node);
-        const targetId = String(meta.bridgeTarget || "");
-        const manualTarget = targetId ? ctx.getNode(targetId) : null;
-        const linkedTarget = downstreamTarget(ctx, ctx.getNodes());
-        const target = linkedTarget || manualTarget;
-        const viaLinked = Boolean(linkedTarget);
+        const target = linkedTarget(ctx);
         const autoRun = meta.bridgeAutoRun !== false;
 
         useEffect(() => {
@@ -266,7 +217,8 @@ export default function (runtime) {
                 if (stopped || busy) return;
                 busy = true;
                 try {
-                    const base = baseOf(ctxRef.current.node);
+                    const current = ctxRef.current;
+                    const base = baseOf(current.node);
                     const response = await fetch(`${base}/queue`, { cache: "no-store" });
                     if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     const data = await response.json();
@@ -275,24 +227,19 @@ export default function (runtime) {
                     setPending(items.length);
                     if (!items.length) return;
 
-                    const current = ctxRef.current;
-                    const nodes = listTargets(current.getNodes(), current.node && current.node.id);
+                    const all = (current.getNodes?.() || []).filter(supportsWrite);
+                    const linked = linkedTarget(current);
                     const selfMeta = current.node?.metadata || {};
-                    const chosen = String(selfMeta.bridgeTarget || "");
                     const shouldRun = selfMeta.bridgeAutoRun !== false;
                     const done = [];
 
-                    const linked = downstreamTarget(current, nodes);
-                    const origin = current.node?.position;
                     for (const item of items) {
-                        const match =
-                            (item.target ? pickByHint(nodes, item.target, origin) : null) ||
-                            linked ||
-                            pickByHint(nodes, chosen, origin);
+                        // 目标：消息显式指定 > 画布连线
+                        const match = (item.target ? pickByHint(all, item.target) : null) || linked || linkedTarget(current);
                         const text = String(item.text || "").trim();
                         if (!match || !text) {
                             done.push(item.id);
-                            setLast(`跳过 #${item.id}：${item.target ? `找不到「${item.target}」` : "未选目标"}`);
+                            setLast(`跳过 #${item.id}：这张卡还没有连到目标节点`);
                             continue;
                         }
                         const ops = [{ type: "update_node", id: match.id, metadata: patchFor(match, text) }];
@@ -355,11 +302,7 @@ export default function (runtime) {
                     "div",
                     { style: { ...line, flex: "1 1 auto" } },
                     h(Dot, { ok: connected }),
-                    h(
-                        "span",
-                        { style: { fontWeight: 700, fontSize: 12, color: connected ? OK : BAD, whiteSpace: "nowrap" } },
-                        connected ? "已连接" : "未连接",
-                    ),
+                    h("span", { style: { fontWeight: 700, fontSize: 12, color: connected ? OK : BAD, whiteSpace: "nowrap" } }, connected ? "已连接" : "未连接"),
                     h(
                         "span",
                         { style: { color: palette.node.faint, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
@@ -369,15 +312,15 @@ export default function (runtime) {
                 pending > 0 ? h(Badge, { color: WARN, bg: tint(palette, "warnSoft") }, `${pending} 待取`) : null,
             ),
 
-            // ② 目标
+            // ② 目标（连线）
             h(
                 "div",
                 {
                     style: {
                         ...line,
                         gap: 8,
-                        background: tint(palette, "block"),
-                        border: `1px solid ${palette.node.stroke}`,
+                        background: tint(palette, target ? "accSoft" : "warnSoft"),
+                        border: `1px solid ${target ? palette.node.stroke : "rgba(217,119,6,.45)"}`,
                         borderRadius: 8,
                         padding: "7px 9px",
                         boxSizing: "border-box",
@@ -394,22 +337,11 @@ export default function (runtime) {
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
-                            color: target ? palette.node.text : palette.node.placeholder,
+                            color: target ? palette.node.text : WARN,
                         },
                     },
-                    target ? `${typeLabel(target.type)} · ${titleOf(target)}` : "未选择节点",
+                    target ? `${typeLabel(target.type)} · ${titleOf(target)}` : "未连线 · 拖一条线到目标节点",
                 ),
-                target
-                    ? h(
-                          Badge,
-                          {
-                              color: viaLinked ? ACCENT : palette.node.muted,
-                              bg: viaLinked ? tint(palette, "accSoft") : tint(palette, "block"),
-                              title: viaLinked ? "目标来自画布上的连线" : "目标来自面板里的选择",
-                          },
-                          viaLinked ? "连线" : "手选",
-                      )
-                    : null,
             ),
 
             // ③ 行为徽标
@@ -421,14 +353,8 @@ export default function (runtime) {
                     { color: autoRun ? OK : palette.node.muted, bg: autoRun ? tint(palette, "okSoft") : tint(palette, "block") },
                     autoRun ? "写入即生成" : "仅写入",
                 ),
-                target && generationModeOf(target)
-                    ? h(Badge, { color: ACCENT, bg: tint(palette, "accSoft") }, generationModeOf(target))
-                    : null,
-                h(
-                    "span",
-                    { style: { marginLeft: "auto", fontSize: 9, letterSpacing: ".06em", color: palette.node.faint, whiteSpace: "nowrap" } },
-                    `v${VERSION}`,
-                ),
+                target && generationModeOf(target) ? h(Badge, { color: ACCENT, bg: tint(palette, "accSoft") }, generationModeOf(target)) : null,
+                h("span", { style: { marginLeft: "auto", fontSize: 9, letterSpacing: ".06em", color: palette.node.faint, whiteSpace: "nowrap" } }, `v${VERSION}`),
             ),
 
             // ④ 最近活动
@@ -454,35 +380,17 @@ export default function (runtime) {
 
     function Panel({ ctx }) {
         const palette = paletteOf(ctx.theme);
-        const [tick, setTick] = useState(0);
         const [status, setStatus] = useState("");
         const [draftBase, setDraftBase] = useState("");
 
-        const nodes = useMemo(() => listTargets(ctx.getNodes(), ctx.node && ctx.node.id), [tick]);
         const meta = ctx.node?.metadata || {};
-        const targetId = String(meta.bridgeTarget || "");
         const autoRun = meta.bridgeAutoRun !== false;
-        const linked = downstreamTarget(ctx, nodes);
-        const target = linked || (targetId ? ctx.getNode(targetId) : null);
+        const target = linkedTarget(ctx);
         const bridgeBase = baseOf(ctx.node);
 
         useEffect(() => {
             setDraftBase(String((ctx.node?.metadata || {}).bridgeBase || ""));
         }, [ctx.node?.id, ctx.node?.metadata?.bridgeBase]);
-
-        const options = (() => {
-            const buckets = new Map();
-            for (const node of nodes) {
-                const key = typeLabel(node.type);
-                if (!buckets.has(key)) buckets.set(key, []);
-                const mode = generationModeOf(node);
-                buckets.get(key).push({
-                    value: node.id,
-                    label: `${titleOf(node)}${mode ? ` · ${mode}` : ""}`,
-                });
-            }
-            return [...buckets.entries()].map(([label, groupOptions]) => ({ label, options: groupOptions }));
-        })();
 
         const row = { display: "flex", alignItems: "center", gap: 8, width: "100%", minWidth: 0 };
         const inputStyle = {
@@ -516,6 +424,48 @@ export default function (runtime) {
                 },
             },
 
+            // 目标（只读，来自连线）
+            h(
+                Section,
+                { palette, label: "写入目标", hint: target ? typeLabel(target.type) : "未连线" },
+                h(
+                    "div",
+                    {
+                        style: {
+                            ...row,
+                            background: palette.node.panel,
+                            border: `1px solid ${target ? palette.node.stroke : "rgba(217,119,6,.45)"}`,
+                            borderRadius: 7,
+                            padding: "6px 8px",
+                            boxSizing: "border-box",
+                        },
+                    },
+                    h(
+                        "span",
+                        {
+                            style: {
+                                flex: "1 1 auto",
+                                minWidth: 0,
+                                fontWeight: 600,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                color: target ? palette.node.text : WARN,
+                            },
+                        },
+                        target ? `${typeLabel(target.type)} · ${titleOf(target)}` : "把这张卡连到目标节点",
+                    ),
+                    target && generationModeOf(target) ? h(Badge, { color: ACCENT, bg: tint(palette, "accSoft") }, generationModeOf(target)) : null,
+                ),
+                h(
+                    "div",
+                    { style: { fontSize: 10, color: palette.node.faint, lineHeight: 1.4 } },
+                    target
+                        ? "目标由画布连线决定；把线改接到别的节点，写入目标随之改变"
+                        : "在画布上从这张卡拖一条线到目标节点，即可自动识别",
+                ),
+            ),
+
             // 邮筒地址
             h(
                 Section,
@@ -546,41 +496,10 @@ export default function (runtime) {
                 ),
             ),
 
-            // 目标
-            h(
-                Section,
-                { palette, label: "写入目标", hint: linked ? `跟随连线 · ${typeLabel(linked.type)}` : target ? `${typeLabel(target.type)} · 手选` : "未选择" },
-                h(
-                    "div",
-                    { style: row },
-                    h(Select, {
-                        style: { flex: "1 1 auto", minWidth: 0 },
-                        placeholder: "选择接收提示词的节点",
-                        showSearch: true,
-                        optionFilterProp: "label",
-                        value: targetId || undefined,
-                        options,
-                        onChange: (value) => {
-                            ctx.applyOps([{ type: "update_node", id: ctx.node.id, metadata: { bridgeTarget: value } }]);
-                            const found = nodes.find((node) => node.id === value);
-                            setStatus(`目标：${found ? `${typeLabel(found.type)} · ${titleOf(found)}` : value}`);
-                        },
-                    }),
-                    h(Button, { size: "small", onClick: () => setTick((n) => n + 1) }, "刷新"),
-                ),
-                h(
-                    "div",
-                    { style: { fontSize: 10, color: palette.node.faint, lineHeight: 1.4 } },
-                    linked
-                        ? "已跟随连线；下拉里选一个可改为手选"
-                        : "把这张卡连到目标节点，会自动跟随；也可以直接在下拉里选",
-                ),
-            ),
-
             // 行为
             h(
                 Section,
-                { palette, label: "写入后", hint: target ? generationModeOf(target) || "不支持生成" : "先选目标" },
+                { palette, label: "写入后", hint: target ? generationModeOf(target) || "不支持生成" : "先连线" },
                 h(
                     "label",
                     { style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 } },
@@ -658,14 +577,14 @@ export default function (runtime) {
         id: "prompt-bridge",
         name: "提示词桥",
         version: VERSION,
-        description: "轮询 DSH 插件内置的提示词邮筒，写入指定画布节点，可选写入后自动生成。",
+        description: "轮询 DSH 插件内置的提示词邮筒，写入连线指向的节点，可选写入后自动生成。",
         defaultEnabled: true,
         nodes: [
             {
                 type: NODE_TYPE,
                 title: "提示词桥",
                 icon: h("span", { style: { fontSize: 10, fontWeight: 700, letterSpacing: "-.02em" } }, "BRG"),
-                defaultSize: { width: 316, height: 186 },
+                defaultSize: { width: 316, height: 168 },
                 defaultMetadata: { bridgeAutoRun: true },
                 showInCreateMenu: true,
                 autoOpenPanel: true,
