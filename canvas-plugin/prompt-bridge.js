@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.4.2";
+    const VERSION = "2.4.3";
     const POLL_MS = 1500;
     // 克隆新卡时剔掉的字段：上一轮的运行结果与任务状态。
     // 留着会让新卡顶着旧图、旧任务 ID 和旧错误，看起来像没生效。
@@ -274,12 +274,13 @@ export default function (runtime) {
                     const linked = linkedTarget(current);
                     const selfMeta = current.node?.metadata || {};
                     const shouldRun = selfMeta.bridgeAutoRun !== false;
-                    // 队列模式：一次取到多条时，全部各自新建一张卡并各自触发生成，原卡保持不动当模板；
-                    // 只有取到一条时才写进原卡。metadata.bridgeQueue 设为 "stack" 可退回旧行为
-                    //（全部写同一张卡，后一条覆盖前一条）。
+                    // 队列模式：第一条写进连线指向的那张卡，第二条起各自新建一张卡并各自触发生成。
+                    // 这样连好的生成卡不会白等着不用，也不会被后续几条轮流覆盖。
+                    // metadata.bridgeQueue 设为 "stack" 可退回旧行为（全部写同一张卡，后一条覆盖前一条）。
                     const clonePerItem = selfMeta.bridgeQueue !== "stack";
                     const done = [];
                     const summary = [];
+                    let handled = 0;
                     let spawned = 0;
 
                     for (const item of items) {
@@ -293,7 +294,8 @@ export default function (runtime) {
                         }
 
                         const mode = shouldRun ? generationModeOf(match) : "";
-                        const reuse = !clonePerItem || items.length === 1;
+                        // 第一条落到连好的卡上，之后每一条各建一张新卡
+                        const reuse = !clonePerItem || handled === 0;
                         let ops;
 
                         if (reuse) {
@@ -338,12 +340,13 @@ export default function (runtime) {
                         }
 
                         current.applyOps(ops);
+                        handled += 1;
                         done.push(item.id);
                         summary.push(`#${item.id} ${reuse ? "写原卡" : "新建卡"}${mode ? " · 已排队生成" : ""}`);
                     }
 
                     if (summary.length) {
-                        setLast(summary.length > 1 ? `共 ${summary.length} 条各自成卡：${summary.join("；")}` : summary[0]);
+                        setLast(summary.length > 1 ? `共 ${summary.length} 条：${summary.join("；")}` : summary[0]);
                     }
 
                     if (done.length) {
