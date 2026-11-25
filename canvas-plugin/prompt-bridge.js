@@ -7,8 +7,35 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.3.0";
+    const VERSION = "2.4.0";
     const POLL_MS = 1500;
+    // 克隆新卡时剔掉的字段：上一轮的运行结果与任务状态。
+    // 留着会让新卡顶着旧图、旧任务 ID 和旧错误，看起来像没生效。
+    const RESULT_KEYS = [
+        "status",
+        "errorDetails",
+        "images",
+        "primaryImageId",
+        "storageKey",
+        "mimeType",
+        "bytes",
+        "durationMs",
+        "previewUrl",
+        "previewMime",
+        "previewStep",
+        "previewTotal",
+        "stepProgress",
+        "generationStartedAt",
+        "generationDurationMs",
+        "videoTaskId",
+        "videoTaskProvider",
+        "captionStatus",
+        "captionError",
+        "promptOptimizeStatus",
+        "promptOptimizeError",
+        "model3d",
+        "stage3d",
+    ];
     const PAGE_HOST = (typeof window !== "undefined" && window.location && window.location.hostname) || "127.0.0.1";
     const DEFAULT_BASE = `http://${PAGE_HOST}:8799`;
 
@@ -231,7 +258,13 @@ export default function (runtime) {
                     const linked = linkedTarget(current);
                     const selfMeta = current.node?.metadata || {};
                     const shouldRun = selfMeta.bridgeAutoRun !== false;
+                    // 队列模式：一次取到多条时，全部各自新建一张卡并各自触发生成，原卡保持不动当模板；
+                    // 只有取到一条时才写进原卡。metadata.bridgeQueue 设为 "stack" 可退回旧行为
+                    //（全部写同一张卡，后一条覆盖前一条）。
+                    const clonePerItem = selfMeta.bridgeQueue !== "stack";
                     const done = [];
+                    const summary = [];
+                    let spawned = 0;
 
                     for (const item of items) {
                         // 目标：消息显式指定 > 画布连线
@@ -242,12 +275,46 @@ export default function (runtime) {
                             setLast(`跳过 #${item.id}：这张卡还没有连到目标节点`);
                             continue;
                         }
-                        const ops = [{ type: "update_node", id: match.id, metadata: patchFor(match, text) }];
+
                         const mode = shouldRun ? generationModeOf(match) : "";
-                        if (mode) ops.push({ type: "run_generation", nodeId: match.id, mode });
+                        const reuse = !clonePerItem || items.length === 1;
+                        let ops;
+
+                        if (reuse) {
+                            ops = [{ type: "update_node", id: match.id, metadata: patchFor(match, text) }];
+                            if (mode) ops.push({ type: "run_generation", nodeId: match.id, mode });
+                        } else {
+                            spawned += 1;
+                            const id = `bridge-${match.type}-${Date.now()}-${spawned}`;
+                            const gap = Math.round((match.height || 320) + 48);
+                            // 只继承配置，剥掉上一轮的结果与任务状态
+                            const pristine = { ...(match.metadata || {}) };
+                            RESULT_KEYS.forEach((key) => delete pristine[key]);
+                            ops = [
+                                {
+                                    type: "add_node",
+                                    id,
+                                    nodeType: match.type,
+                                    title: `${titleOf(match)} #${spawned + 1}`,
+                                    position: {
+                                        x: (match.position?.x || 0) + gap * spawned,
+                                        y: (match.position?.y || 0) + gap * spawned,
+                                    },
+                                    width: match.width,
+                                    height: match.height,
+                                    metadata: { ...pristine, ...patchFor(match, text) },
+                                },
+                            ];
+                            if (mode) ops.push({ type: "run_generation", nodeId: id, mode });
+                        }
+
                         current.applyOps(ops);
                         done.push(item.id);
-                        setLast(`#${item.id} → ${typeLabel(match.type)} · ${titleOf(match)}${mode ? " · 已生成" : ""}`);
+                        summary.push(`#${item.id} ${reuse ? "写原卡" : "新建卡"}${mode ? " · 已排队生成" : ""}`);
+                    }
+
+                    if (summary.length) {
+                        setLast(summary.length > 1 ? `共 ${summary.length} 条各自成卡：${summary.join("；")}` : summary[0]);
                     }
 
                     if (done.length) {
