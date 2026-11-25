@@ -117,6 +117,60 @@ export default function (runtime) {
         return node && node.type === "text" ? { content: text } : { prompt: text };
     }
 
+    function supportsWrite(node) {
+        return Boolean(node) && !SKIP_TYPES.has(node.type);
+    }
+
+    /** 距离某点最近的节点（用于标题重名时挑一个近的）。 */
+    function nearestTo(nodes, point) {
+        let best = null;
+        let bestDist = Infinity;
+        for (const node of nodes) {
+            const dx = (node.position?.x || 0) - (point?.x || 0);
+            const dy = (node.position?.y || 0) - (point?.y || 0);
+            const dist = dx * dx + dy * dy;
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = node;
+            }
+        }
+        return best;
+    }
+
+    /** 从桥卡连出去的下游节点，优先作为目标。 */
+    function downstreamTarget(ctx, all) {
+        let list = [];
+        try {
+            list = ctx.getDownstream?.() || [];
+        } catch {
+            list = [];
+        }
+        const candidates = list.filter(supportsWrite);
+        if (!candidates.length) return null;
+        const known = new Set((all || []).map((node) => node.id));
+        return candidates.find((node) => known.has(node.id)) || candidates[0];
+    }
+
+    /** 标题匹配打分：精确 > 前缀 > 包含，重名时取离桥卡最近的。 */
+    function pickByHint(nodes, hint, origin) {
+        const raw = String(hint || "").trim();
+        if (!raw) return null;
+        const lower = raw.toLowerCase();
+        const byId = nodes.find((node) => node.id === raw);
+        if (byId) return byId;
+        const scored = nodes
+            .map((node) => {
+                const title = titleOf(node).toLowerCase();
+                const score = title === lower ? 3 : title.startsWith(lower) ? 2 : title.includes(lower) ? 1 : 0;
+                return { node, score };
+            })
+            .filter((item) => item.score > 0);
+        if (!scored.length) return null;
+        const top = Math.max(...scored.map((item) => item.score));
+        const winners = scored.filter((item) => item.score === top).map((item) => item.node);
+        return winners.length === 1 ? winners[0] : nearestTo(winners, origin);
+    }
+
     /* ---------- 视觉零件 ---------- */
 
     function Badge({ children, color, bg, title }) {
@@ -198,7 +252,10 @@ export default function (runtime) {
         const meta = ctx.node?.metadata || {};
         const bridgeBase = baseOf(ctx.node);
         const targetId = String(meta.bridgeTarget || "");
-        const target = targetId ? ctx.getNode(targetId) : null;
+        const manualTarget = targetId ? ctx.getNode(targetId) : null;
+        const linkedTarget = downstreamTarget(ctx, ctx.getNodes());
+        const target = linkedTarget || manualTarget;
+        const viaLinked = Boolean(linkedTarget);
         const autoRun = meta.bridgeAutoRun !== false;
 
         useEffect(() => {
@@ -225,8 +282,13 @@ export default function (runtime) {
                     const shouldRun = selfMeta.bridgeAutoRun !== false;
                     const done = [];
 
+                    const linked = downstreamTarget(current, nodes);
+                    const origin = current.node?.position;
                     for (const item of items) {
-                        const match = (item.target ? matchTarget(nodes, item.target) : null) || matchTarget(nodes, chosen);
+                        const match =
+                            (item.target ? pickByHint(nodes, item.target, origin) : null) ||
+                            linked ||
+                            pickByHint(nodes, chosen, origin);
                         const text = String(item.text || "").trim();
                         if (!match || !text) {
                             done.push(item.id);
@@ -337,6 +399,17 @@ export default function (runtime) {
                     },
                     target ? `${typeLabel(target.type)} · ${titleOf(target)}` : "未选择节点",
                 ),
+                target
+                    ? h(
+                          Badge,
+                          {
+                              color: viaLinked ? ACCENT : palette.node.muted,
+                              bg: viaLinked ? tint(palette, "accSoft") : tint(palette, "block"),
+                              title: viaLinked ? "目标来自画布上的连线" : "目标来自面板里的选择",
+                          },
+                          viaLinked ? "连线" : "手选",
+                      )
+                    : null,
             ),
 
             // ③ 行为徽标
@@ -389,17 +462,27 @@ export default function (runtime) {
         const meta = ctx.node?.metadata || {};
         const targetId = String(meta.bridgeTarget || "");
         const autoRun = meta.bridgeAutoRun !== false;
-        const target = targetId ? ctx.getNode(targetId) : null;
+        const linked = downstreamTarget(ctx, nodes);
+        const target = linked || (targetId ? ctx.getNode(targetId) : null);
         const bridgeBase = baseOf(ctx.node);
 
         useEffect(() => {
             setDraftBase(String((ctx.node?.metadata || {}).bridgeBase || ""));
         }, [ctx.node?.id, ctx.node?.metadata?.bridgeBase]);
 
-        const options = nodes.map((node) => ({
-            value: node.id,
-            label: `${typeLabel(node.type)} · ${titleOf(node)}`,
-        }));
+        const options = (() => {
+            const buckets = new Map();
+            for (const node of nodes) {
+                const key = typeLabel(node.type);
+                if (!buckets.has(key)) buckets.set(key, []);
+                const mode = generationModeOf(node);
+                buckets.get(key).push({
+                    value: node.id,
+                    label: `${titleOf(node)}${mode ? ` · ${mode}` : ""}`,
+                });
+            }
+            return [...buckets.entries()].map(([label, groupOptions]) => ({ label, options: groupOptions }));
+        })();
 
         const row = { display: "flex", alignItems: "center", gap: 8, width: "100%", minWidth: 0 };
         const inputStyle = {
@@ -466,7 +549,7 @@ export default function (runtime) {
             // 目标
             h(
                 Section,
-                { palette, label: "写入目标", hint: target ? typeLabel(target.type) : "未选择" },
+                { palette, label: "写入目标", hint: linked ? `跟随连线 · ${typeLabel(linked.type)}` : target ? `${typeLabel(target.type)} · 手选` : "未选择" },
                 h(
                     "div",
                     { style: row },
@@ -479,11 +562,18 @@ export default function (runtime) {
                         options,
                         onChange: (value) => {
                             ctx.applyOps([{ type: "update_node", id: ctx.node.id, metadata: { bridgeTarget: value } }]);
-                            const found = options.find((item) => item.value === value);
-                            setStatus(`目标：${found ? found.label : value}`);
+                            const found = nodes.find((node) => node.id === value);
+                            setStatus(`目标：${found ? `${typeLabel(found.type)} · ${titleOf(found)}` : value}`);
                         },
                     }),
                     h(Button, { size: "small", onClick: () => setTick((n) => n + 1) }, "刷新"),
+                ),
+                h(
+                    "div",
+                    { style: { fontSize: 10, color: palette.node.faint, lineHeight: 1.4 } },
+                    linked
+                        ? "已跟随连线；下拉里选一个可改为手选"
+                        : "把这张卡连到目标节点，会自动跟随；也可以直接在下拉里选",
                 ),
             ),
 
