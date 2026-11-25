@@ -1,68 +1,74 @@
 # Canvas prompt bridge for DeepSeek Harness
 
-A DeepSeek Harness bundle that sends prompts to an [Infinite Canvas](https://github.com/basketikun/infinite-canvas) running on your LAN. A canvas-side plugin writes each prompt into the node you selected there, so you only run the generation.
+Two halves that let you write a prompt in DeepSeek Harness and have it land in an [Infinite Canvas](https://github.com/basketikun/infinite-canvas) node on your LAN — with optional automatic generation.
 
 ```
-DSH tool canvas_prompt
-  → POST http://<canvas-host>:8799/prompt
-    → canvas plugin polls the bridge
-      → writes the text into the selected node
-        → you click generate
+DSH plugin (this bundle)          Canvas plugin (infinite-canvas)
+  in-process inbox :8799   ◀──poll──  「提示词桥」card
+        ▲                                   │
+        └──── canvas_prompt tool            └── writes the prompt into the selected node,
+                                                  then optionally runs generation
 ```
 
-## Why a bridge
+The inbox lives **inside this DSH plugin**: its `apply()` starts an HTTP server on the configured port while DSH runs. No separate process, no service to keep alive, no gateway or launcher changes.
 
-Canvas node data lives in the browser page; DSH runs in Node. Neither can reach the other directly, and the canvas exposes no "write node by id" API. The bridge is a small local HTTP queue that both sides can reach.
+## Contents
 
-## Install
+| Path | What |
+|---|---|
+| `index.js` | DSH Host plugin: in-process inbox + three tools |
+| `canvas-plugin/prompt-bridge.js` | Canvas-side plugin: polls the inbox, writes prompts, optional auto-run |
+| `cordis.patch.yml` | Loader row for the bundle |
+| `docs/DETAIL.md` | Long description shown in the DSH plugin page |
 
-Requires DeepSeek Harness. From the DSH checkout or workspace:
+## Install the DSH half
 
+```bash
+# from this repository
+dsh plugin --profile <profile> add https://github.com/c225820h/dsh-canvas-prompt
+# or in the GUI: Plugins → Add plugin → paste the Git address → Install → Enable now
 ```
-plugin_manager install_bundle <absolute path to this directory>
-```
 
-Or copy this directory to the target machine and use **Plugins → Add plugin** in the DSH GUI.
+Requires `@deepseek-ai/schemastery` (declared as a dependency; a Git install brings it automatically, a local-directory install needs `npm install` in the package directory first).
 
-The bundle declares `@deepseek-ai/schemastery` as its only dependency; `npm install` (or `pnpm install`) inside the package directory provides it.
+## Install the canvas half
 
-## Configure the canvas address
+1. Copy `canvas-plugin/prompt-bridge.js` into `infinite-canvas/web/public/plugins/` and `infinite-canvas/web/dist/plugins/`.
+2. Add `"/plugins/prompt-bridge.js"` to both `plugins/index.json` arrays.
+3. Reload the canvas page (the plugin has `defaultEnabled: true`).
 
-The address is a plugin config value, not a constant in code:
+## Use
 
-- **Chat** — ask the agent: "把画布地址改成 http://192.168.3.201:8799" (tool `canvas_prompt_config`, `action: set`).
-- **Profile patch** — `~/.dsh/profiles/<profile>/cordis.patch.yml`:
-
-  ```yaml
-  - id: canvas-prompt
-    name: "@local/dsh-canvas-prompt"
-    config:
-      bridgeUrl: http://192.168.3.200:8799
-  ```
-
-The field is declared `.volatile()`, so a write applies without restarting the plugin. This bundle ships no browser-side settings page: DSH only renders a plugin page that the plugin itself registers, and a linked workspace bundle cannot reliably ship one, so the value is edited through the tool or the profile patch.
-
-Resolution order: per-call `bridge` argument → `bridgeUrl` config → `CANVAS_BRIDGE_URL` environment variable → built-in default.
+1. In DSH, ask the agent to send a prompt, or call the tool directly: `canvas_prompt { prompt }`.
+2. In the canvas, open the 「提示词桥」 card, set **邮筒地址** to the DSH host (for example `http://192.168.3.200:8799`), pick the target node, and leave **写入后自动生成** checked if you want the run to start immediately.
+3. The card polls every 1.5 s; prompts queue in DSH if the page is closed and are written when it reopens.
 
 ## Tools
 
 | Tool | Purpose |
 |---|---|
-| `canvas_prompt` | Queue a prompt. `prompt` required; `target` optional (node title or id); `bridge` optional one-off override |
+| `canvas_prompt` | Queue a prompt. `prompt` required; `target` optional (node title or id) |
 | `canvas_prompt_bridge` | `status` reads the queue length, `clear` empties it |
-| `canvas_prompt_config` | `get` / `set` / `clear` the saved address |
+| `canvas_prompt_config` | Reads the inbox port and the address to enter in the canvas card |
 
-## Canvas-side setup
+## Configuration
 
-1. The canvas gateway ships the prompt inbox (`POST /api/canvas/prompt`, `GET /api/canvas/prompt/queue`), so no separate bridge process is needed.
-2. In the canvas, create a **提示词桥** (`prompt-bridge`) node and pick the target node in its panel.
-3. Keep the canvas page open; prompts queue while it is closed and are written when it reopens.
+`bridgePort` (default `8799`) is a volatile config field: change it in the profile patch and it applies without restarting DSH.
+
+```yaml
+- id: canvas-prompt
+  name: "@local/dsh-canvas-prompt"
+  config:
+    bridgePort: 8799
+```
+
+The canvas card holds the DSH address itself, because the page cannot infer which machine runs DSH.
 
 ## Limitations
 
-- The bridge listens on the LAN without authentication. Use it only on a trusted network and never expose it to the internet.
-- The plugin only writes prompts; it does not start generations.
-- DSH does not resolve `@deepseek-ai/*` packages from a workspace-linked bundle, so the bundle must not import `@deepseek-ai/dsh-tools`; tool definitions are registered as plain objects.
+- The inbox binds `0.0.0.0` without authentication. Use it only on a trusted network; never expose it to the internet.
+- Queued prompts are in memory: a DSH restart clears them.
+- The canvas card writes `metadata.prompt` (or `metadata.content` for text cards) and triggers `run_generation` only for image, video, audio and text nodes.
 
 ## License
 

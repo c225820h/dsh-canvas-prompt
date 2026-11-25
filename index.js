@@ -1,14 +1,18 @@
 /**
- * Canvas prompt bridge tools: send a prompt to the Infinite Canvas on the LAN,
- * where a canvas-side plugin writes it into the node the user selected.
+ * Canvas prompt bridge, carried by this plugin itself.
  *
- * The bridge address is a volatile Config field: it is editable while the plugin
- * runs (settings form or the canvas_prompt_config tool) and read through its
- * reference. Resolution order: per-call `bridge` argument → Config bridgeUrl →
- * CANVAS_BRIDGE_URL → built-in default.
+ * apply() starts an in-process HTTP inbox on the configured port. Tools queue
+ * prompts into it; the canvas-side 「提示词桥」 card polls it and writes each
+ * prompt into the node the user selected there. No separate process, no gateway
+ * or launcher changes.
+ *
+ * Config: bridgePort (volatile, default 8799) — also published in the tools so
+ * the canvas card knows which address to poll.
  *
  * @module @local/dsh-canvas-prompt
  */
+
+import http from 'node:http'
 
 import z from '@deepseek-ai/schemastery'
 
@@ -17,24 +21,91 @@ export const name = 'canvas-prompt'
 /** Services used by these tools. */
 export const inject = ['tools']
 
-const BUILTIN_BRIDGE = 'http://192.168.3.200:8190/api/canvas/prompt'
+const DEFAULT_PORT = 8799
+const MAX_ITEMS = 50
 
 export const Config = z.object({
-  bridgeUrl: z
-    .string()
-    .description('画布提示词邮筒地址，例如 http://192.168.3.200:8190/api/canvas/prompt；留空使用内置默认。')
-    .default('')
+  bridgePort: z
+    .number()
+    .description('提示词邮筒端口（画布卡片要填同一个端口）')
+    .default(DEFAULT_PORT)
     .volatile(),
 })
 
-export function normalizeBridge(input) {
-  const base = String(input || '').trim().replace(/\/+$/, '')
-  if (!/^https?:\/\/[^\s/]+/i.test(base)) throw new Error(`bridge must look like http://host:port, got: ${input}`)
-  return base
+/** In-process inbox shared by the tools and the HTTP routes. */
+const inbox = { items: [], seq: 0 }
+
+const json = (res, status, body) => {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET,POST,OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    'cache-control': 'no-store',
+  })
+  res.end(JSON.stringify(body))
 }
 
-function envBridge() {
-  return String(process.env.CANVAS_BRIDGE_URL || '').trim()
+const readBody = (req) =>
+  new Promise((resolve, reject) => {
+    let raw = ''
+    req.on('data', (chunk) => {
+      raw += chunk
+      if (raw.length > 1_000_000) reject(new Error('body too large'))
+    })
+    req.on('end', () => resolve(raw))
+    req.on('error', reject)
+  })
+
+function createInboxServer() {
+  return http.createServer(async (req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1')
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET,POST,OPTIONS',
+        'access-control-allow-headers': 'content-type',
+      })
+      return res.end()
+    }
+    if (req.method === 'GET' && url.pathname === '/health') {
+      return json(res, 200, { ok: true, pending: inbox.items.length })
+    }
+    if (req.method === 'GET' && url.pathname === '/queue') {
+      return json(res, 200, { ok: true, items: inbox.items, nextId: inbox.seq + 1 })
+    }
+    if (req.method === 'POST' && url.pathname === '/prompt') {
+      let payload
+      try {
+        payload = JSON.parse((await readBody(req)) || '{}')
+      } catch (error) {
+        return json(res, 400, { ok: false, error: `bad json: ${error.message}` })
+      }
+      const text = String((payload && payload.text) || '').trim()
+      if (!text) return json(res, 400, { ok: false, error: 'text is required' })
+      const item = { id: (inbox.seq += 1), target: String((payload && payload.target) || '').trim(), text, at: Date.now() }
+      inbox.items.push(item)
+      while (inbox.items.length > MAX_ITEMS) inbox.items.shift()
+      return json(res, 200, { ok: true, item, pending: inbox.items.length })
+    }
+    if (req.method === 'POST' && url.pathname === '/ack') {
+      let payload
+      try {
+        payload = JSON.parse((await readBody(req)) || '{}')
+      } catch {
+        payload = {}
+      }
+      const ids = new Set((Array.isArray(payload && payload.ids) ? payload.ids : []).map(Number))
+      inbox.items = inbox.items.filter((entry) => !ids.has(entry.id))
+      return json(res, 200, { ok: true, pending: inbox.items.length })
+    }
+    if (req.method === 'POST' && url.pathname === '/clear') {
+      inbox.items = []
+      return json(res, 200, { ok: true, pending: 0 })
+    }
+    return json(res, 404, { ok: false, error: 'not found' })
+  })
 }
 
 async function requestJson(url, init, timeoutMs = 8000) {
@@ -44,139 +115,131 @@ async function requestJson(url, init, timeoutMs = 8000) {
   try {
     data = text ? JSON.parse(text) : {}
   } catch {
-    throw new Error(`bridge returned non-JSON (HTTP ${response.status}): ${text.slice(0, 120)}`)
+    throw new Error(`inbox returned non-JSON (HTTP ${response.status}): ${text.slice(0, 120)}`)
   }
   if (!response.ok || data.ok === false) {
-    throw new Error(`bridge error (HTTP ${response.status}): ${data.error || text.slice(0, 120)}`)
+    throw new Error(`inbox error (HTTP ${response.status}): ${data.error || text.slice(0, 120)}`)
   }
   return data
 }
 
-/** Register the canvas prompt tools. */
+function portOf(config) {
+  const field = config && config.bridgePort
+  const value = field && typeof field.get === 'function' ? field.get() : field
+  const port = Number(value)
+  return Number.isFinite(port) && port > 0 && port < 65536 ? Math.trunc(port) : DEFAULT_PORT
+}
+
+/** Register the inbox and its tools. */
 export function apply(ctx, config) {
-  function savedBridge() {
-    const field = config && config.bridgeUrl
-    const value = field && typeof field.get === 'function' ? field.get() : field
-    return String(value || '').trim()
+  let server = null
+  let listeningPort = portOf(config)
+
+  try {
+    server = createInboxServer()
+    server.listen(listeningPort, '0.0.0.0')
+    server.on('error', (error) => {
+      console.warn(`[canvas-prompt] 邮筒监听 ${listeningPort} 失败：${error.message}`)
+    })
+  } catch (error) {
+    console.warn(`[canvas-prompt] 无法启动邮筒：${error.message}`)
   }
 
-  function resolveBridge(callArg) {
-    const raw = String(callArg || '').trim()
-    return normalizeBridge(raw || savedBridge() || envBridge() || BUILTIN_BRIDGE)
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(() => () => {
+      try {
+        server?.close()
+      } catch {}
+    })
   }
 
-  function bridgeSource() {
-    if (savedBridge()) return 'config'
-    if (envBridge()) return 'env'
-    return 'default'
-  }
+  const local = () => `http://127.0.0.1:${listeningPort}`
 
   ctx.tools.register({
     name: 'canvas_prompt',
-    description: "Queue a prompt for the Infinite Canvas. A canvas-side plugin writes it into the node the user selected there; the user then runs the generation. The bridge address comes from this plugin's settings, so neither the user nor you need to know the host.",
+    description: 'Queue a prompt for the Infinite Canvas. The canvas-side 提示词桥 card polls this plugin\'s in-process inbox and writes the prompt into the node the user selected there. Queue several prompts to send several.',
     parameters: {
       prompt: { type: 'string', required: true, description: 'Prompt text to write into the canvas node.' },
       target: { type: 'string', description: 'Optional node title or node id in the canvas. Omit to use the node the user selected in the bridge card.' },
-      bridge: { type: 'string', description: 'Optional one-off bridge base URL, overriding the saved setting.' },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['pending', 'id', 'bridge'],
+        required: ['pending', 'id', 'port'],
         properties: {
-          pending: { type: 'number', description: 'Items waiting for the canvas page to pick up, including this one.' },
+          pending: { type: 'number', description: 'Queued prompts waiting for the canvas page, including this one.' },
           id: { type: 'number', description: 'Queue id of this prompt.' },
-          bridge: { type: 'string', description: 'Bridge base URL that accepted the prompt.' },
+          port: { type: 'number', description: 'Inbox port the canvas card must poll.' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `已发送到画布队列（#${value.id}，待处理 ${value.pending} 条）。画布页面会写入你选中的节点。` }],
+      render: (_args, value) => [{ type: 'text', text: `已入队（#${value.id}，待处理 ${value.pending} 条）。画布卡片轮询 :${value.port}，会写入你选中的节点。` }],
     },
     async execute(args) {
       const prompt = String((args && args.prompt) || '').trim()
       if (!prompt) throw new Error('prompt must not be empty')
-      const bridge = resolveBridge(args && args.bridge)
-      const data = await requestJson(bridge, {
+      const data = await requestJson(`${local()}/prompt`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text: prompt, target: String((args && args.target) || '').trim() }),
       })
-      return { pending: Number(data.pending) || 0, id: Number(data.item && data.item.id) || 0, bridge }
+      return { pending: Number(data.pending) || 0, id: Number(data.item && data.item.id) || 0, port: listeningPort }
     },
   })
 
   ctx.tools.register({
     name: 'canvas_prompt_bridge',
-    description: 'Check the prompt bridge queue, or clear it. Use status to confirm the canvas host is reachable before sending; use clear to drop prompts the canvas page never picked up.',
+    description: 'Check this plugin\'s inbox, or clear it. Use status to see whether prompts are piling up unread (canvas page closed); clear drops them.',
     parameters: {
       action: { type: 'string', enum: ['status', 'clear'], description: 'status reads the queue length; clear empties it. Defaults to status.' },
-      bridge: { type: 'string', description: 'Optional one-off bridge base URL, overriding the saved setting.' },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['ok', 'pending', 'bridge'],
+        required: ['ok', 'pending', 'port'],
         properties: {
-          ok: { type: 'boolean', description: 'Whether the bridge answered.' },
+          ok: { type: 'boolean', description: 'Whether the inbox answered.' },
           pending: { type: 'number', description: 'Queued prompts after this call.' },
-          bridge: { type: 'string', description: 'Bridge base URL that answered.' },
+          port: { type: 'number', description: 'Inbox port.' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `桥 ${value.bridge} 正常，待处理 ${value.pending} 条。` }],
+      render: (_args, value) => [{ type: 'text', text: `邮筒 :${value.port} 正常，待处理 ${value.pending} 条。` }],
     },
     async execute(args) {
-      const bridge = resolveBridge(args && args.bridge)
       const action = args && args.action === 'clear' ? 'clear' : 'status'
       if (action === 'clear') {
-        const data = await requestJson(`${bridge}/clear`, { method: 'POST' })
-        return { ok: true, pending: Number(data.pending) || 0, bridge }
+        const data = await requestJson(`${local()}/clear`, { method: 'POST' })
+        return { ok: true, pending: Number(data.pending) || 0, port: listeningPort }
       }
-      const data = await requestJson(`${bridge}/health`, {})
-      return { ok: data.ok !== false, pending: Number(data.pending) || 0, bridge }
+      const data = await requestJson(`${local()}/health`, {})
+      return { ok: data.ok !== false, pending: Number(data.pending) || 0, port: listeningPort }
     },
   })
 
   ctx.tools.register({
     name: 'canvas_prompt_config',
-    description: "Read the canvas bridge address, or save a new one into this plugin's config so it survives restarts. There is no settings page: this tool and the profile patch are the two ways to change it.",
+    description: 'Read the inbox port this plugin listens on, and the address the canvas card should poll.',
     parameters: {
-      action: { type: 'string', enum: ['get', 'set', 'clear'], description: 'get shows the address and its source; set stores a new one; clear removes the saved value.' },
-      bridge: { type: 'string', description: 'Required for set: the address to use, such as http://192.168.3.201:8799.' },
+      action: { type: 'string', enum: ['get'], description: 'Read the current port and the address to enter in the canvas card.' },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['bridge', 'source'],
+        required: ['port', 'address'],
         properties: {
-          bridge: { type: 'string', description: 'The address that will be used.' },
-          source: { type: 'string', description: 'Where the address comes from: config, env, or default.' },
+          port: { type: 'number', description: 'Inbox port.' },
+          address: { type: 'string', description: 'Address the canvas 提示词桥 card should poll.' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `当前画布地址：${value.bridge}（来源：${value.source}）` }],
+      render: (_args, value) => [{ type: 'text', text: `邮筒端口 ${value.port}；画布卡片填：${value.address}` }],
     },
-    async execute(args) {
-      const action = args && args.action ? args.action : 'get'
+    async execute() {
       const entry = ctx.fiber && ctx.fiber.entry
       const editor = ctx.get('configEditor')
-
-      if (action === 'set') {
-        const next = normalizeBridge(args && args.bridge)
-        if (entry === undefined || editor === undefined) {
-          throw new Error('这个 profile 里不能保存配置；请在 DSH 设置页的插件配置里修改画布地址。')
-        }
-        await editor.edit(entry, (current) => ({ ...current, bridgeUrl: next }))
-        return { bridge: next, source: 'config' }
-      }
-
-      if (action === 'clear') {
-        if (entry === undefined || editor === undefined) throw new Error('这个 profile 里不能保存配置。')
-        await editor.edit(entry, (current) => ({ ...current, bridgeUrl: '' }))
-        return { bridge: normalizeBridge(envBridge() || BUILTIN_BRIDGE), source: envBridge() ? 'env' : 'default' }
-      }
-
-      return { bridge: resolveBridge(''), source: bridgeSource() }
+      const nextPort = entry !== undefined && editor !== undefined ? portOf(config) : listeningPort
+      return { port: nextPort, address: `http://<本机局域网IP>:${nextPort}` }
     },
   })
 }
