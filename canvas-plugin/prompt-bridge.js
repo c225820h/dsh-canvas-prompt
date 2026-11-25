@@ -1,5 +1,5 @@
-// 提示词桥（画布侧）：轮询 DSH 插件内置的邮筒，把提示词写进你指定的节点，可选自动生成。
-// 邮筒地址可在这张卡里填（因为邮筒跑在 DSH 那台机器上，页面无法自动推断）。
+// 提示词桥（画布侧）：轮询 DSH 插件内置的邮筒，写入指定节点，可选自动生成。
+// 视觉跟随画布主题（ctx.theme），只依赖运行时保证提供的 antd Button / Select。
 export default function (runtime) {
     const { React, antd } = runtime;
     const h = React.createElement;
@@ -10,6 +10,19 @@ export default function (runtime) {
     const POLL_MS = 1500;
     const PAGE_HOST = (typeof window !== "undefined" && window.location && window.location.hostname) || "127.0.0.1";
     const DEFAULT_BASE = `http://${PAGE_HOST}:8799`;
+
+    const FALLBACK_THEME = {
+        node: {
+            panel: "#fbfaf7",
+            fill: "#e7e5df",
+            stroke: "#d6d3ca",
+            text: "#292524",
+            muted: "#78716c",
+            faint: "#a8a29e",
+            label: "#57534e",
+            placeholder: "#8a8479",
+        },
+    };
 
     const TYPE_LABEL = {
         text: "文本",
@@ -22,6 +35,8 @@ export default function (runtime) {
     };
     const SKIP_TYPES = new Set(["group", "config"]);
     const GENERATION_MODES = new Set(["image", "video", "audio", "text"]);
+
+    const paletteOf = (theme) => (theme && theme.node ? theme : FALLBACK_THEME);
 
     function typeLabel(type) {
         if (TYPE_LABEL[type]) return TYPE_LABEL[type];
@@ -75,9 +90,75 @@ export default function (runtime) {
         return node && node.type === "text" ? { content: text } : { prompt: text };
     }
 
-    const caption = { fontSize: 12, color: "#888", lineHeight: 1.5 };
+    /* ---------- 小部件 ---------- */
+
+    function Dot({ ok, color, muted }) {
+        return h("span", {
+            style: {
+                width: 7,
+                height: 7,
+                borderRadius: 999,
+                flex: "0 0 auto",
+                background: ok ? "#22c55e" : color || "#ef4444",
+                boxShadow: ok ? "0 0 0 3px rgba(34,197,94,.16)" : "0 0 0 3px rgba(239,68,68,.14)",
+                opacity: muted ? 0.5 : 1,
+            },
+        });
+    }
+
+    function Pill({ children, tone, palette }) {
+        const tones = {
+            neutral: { bg: palette.node.fill, fg: palette.node.muted },
+            accent: { bg: "rgba(59,130,246,.12)", fg: "#2563eb" },
+            success: { bg: "rgba(34,197,94,.12)", fg: "#16a34a" },
+        };
+        const picked = tones[tone] || tones.neutral;
+        return h(
+            "span",
+            {
+                style: {
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "1px 7px",
+                    borderRadius: 999,
+                    fontSize: 10,
+                    lineHeight: "16px",
+                    fontWeight: 500,
+                    background: picked.bg,
+                    color: picked.fg,
+                    whiteSpace: "nowrap",
+                },
+            },
+            children,
+        );
+    }
+
+    function SectionLabel({ children, palette }) {
+        return h(
+            "div",
+            {
+                style: {
+                    fontSize: 10,
+                    letterSpacing: ".08em",
+                    textTransform: "uppercase",
+                    color: palette.node.faint,
+                    fontWeight: 600,
+                    marginBottom: 6,
+                },
+            },
+            children,
+        );
+    }
+
+    function Divider({ palette }) {
+        return h("div", { style: { height: 1, background: palette.node.stroke, opacity: 0.6, margin: "2px 0" } });
+    }
+
+    /* ---------- 卡片表面 ---------- */
 
     function Content({ ctx }) {
+        const palette = paletteOf(ctx.theme);
         const [connected, setConnected] = useState(false);
         const [pending, setPending] = useState(0);
         const [last, setLast] = useState("");
@@ -120,7 +201,7 @@ export default function (runtime) {
                         const text = String(item.text || "").trim();
                         if (!match || !text) {
                             done.push(item.id);
-                            setLast(`跳过 #${item.id}：${item.target ? `找不到节点「${item.target}」` : "还没选目标节点"}`);
+                            setLast(`跳过 #${item.id}：${item.target ? `找不到「${item.target}」` : "未选目标"}`);
                             continue;
                         }
                         const ops = [{ type: "update_node", id: match.id, metadata: patchFor(match, text) }];
@@ -128,8 +209,8 @@ export default function (runtime) {
                         if (mode) ops.push({ type: "run_generation", nodeId: match.id, mode });
                         current.applyOps(ops);
                         done.push(item.id);
-                        const suffix = mode ? "，已触发生成" : shouldRun ? "，该节点不支持自动生成" : "";
-                        setLast(`#${item.id} → ${typeLabel(match.type)} · ${titleOf(match)}（${text.length} 字${suffix}）`);
+                        const suffix = mode ? " · 已生成" : shouldRun ? " · 该节点不支持生成" : "";
+                        setLast(`#${item.id} → ${typeLabel(match.type)} · ${titleOf(match)}${suffix}`);
                     }
 
                     if (done.length) {
@@ -155,18 +236,106 @@ export default function (runtime) {
             };
         }, []);
 
+        const row = { display: "flex", alignItems: "center", gap: 6, minWidth: 0 };
+
         return h(
             "div",
-            { style: { padding: 12, fontSize: 12, lineHeight: 1.55, height: "100%", overflow: "hidden" } },
-            h("div", { style: { color: connected ? "#389e0d" : "#cf1322", fontWeight: 600 } }, connected ? `邮筒已连接 · 待处理 ${pending}` : `邮筒未连接（${bridgeBase}）`),
-            h("div", { style: { ...caption, marginTop: 4 } }, "写入目标"),
-            h("div", { style: { fontWeight: 600 } }, target ? `${typeLabel(target.type)} · ${titleOf(target)}` : "（未选择，点开卡片选择）"),
-            h("div", { style: { ...caption, marginTop: 4 } }, autoRun ? "写入后：自动生成" : "写入后：只写提示词"),
-            last ? h("div", { style: { ...caption, marginTop: 4, whiteSpace: "pre-wrap", maxHeight: 40, overflow: "hidden" } }, last) : null,
+            {
+                style: {
+                    height: "100%",
+                    boxSizing: "border-box",
+                    padding: "11px 12px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 7,
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    color: palette.node.text,
+                    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
+                },
+            },
+            // 状态行
+            h(
+                "div",
+                { style: { ...row, justifyContent: "space-between" } },
+                h(
+                    "div",
+                    { style: row },
+                    h(Dot, { ok: connected, palette }),
+                    h(
+                        "span",
+                        { style: { fontWeight: 600, fontSize: 12 } },
+                        connected ? "邮筒已连接" : "邮筒未连接",
+                    ),
+                ),
+                pending > 0 ? h(Pill, { tone: "accent", palette }, `${pending} 条待取`) : null,
+            ),
+            // 目标行
+            h(
+                "div",
+                { style: { ...row, gap: 6 } },
+                h("span", { style: { color: palette.node.faint, fontSize: 11, flex: "0 0 auto" } }, "写入"),
+                h(
+                    "span",
+                    {
+                        style: {
+                            fontWeight: 600,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            color: target ? palette.node.text : palette.node.placeholder,
+                        },
+                    },
+                    target ? `${typeLabel(target.type)} · ${titleOf(target)}` : "未选择节点",
+                ),
+            ),
+            // 行为 + 地址
+            h(
+                "div",
+                { style: { ...row, gap: 6, flexWrap: "wrap" } },
+                h(Pill, { tone: autoRun ? "success" : "neutral", palette }, autoRun ? "写入即生成" : "仅写入"),
+                target && GENERATION_MODES.has(target.type)
+                    ? h(Pill, { tone: "neutral", palette }, `模式 ${generationModeOf(target)}`)
+                    : null,
+                h(
+                    "span",
+                    {
+                        style: {
+                            color: palette.node.faint,
+                            fontSize: 10,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            minWidth: 0,
+                        },
+                    },
+                    bridgeBase.replace(/^https?:\/\//, ""),
+                ),
+            ),
+            last
+                ? h(
+                      "div",
+                      {
+                          style: {
+                              color: palette.node.muted,
+                              fontSize: 11,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              borderTop: `1px solid ${palette.node.stroke}`,
+                              paddingTop: 6,
+                          },
+                      },
+                      last,
+                  )
+                : null,
         );
     }
 
+    /* ---------- 面板 ---------- */
+
     function Panel({ ctx }) {
+        const palette = paletteOf(ctx.theme);
         const [tick, setTick] = useState(0);
         const [status, setStatus] = useState("");
         const [draftBase, setDraftBase] = useState("");
@@ -187,108 +356,185 @@ export default function (runtime) {
             label: `${typeLabel(node.type)} · ${titleOf(node)}`,
         }));
 
-        const choose = (value) => {
-            ctx.applyOps([{ type: "update_node", id: ctx.node.id, metadata: { bridgeTarget: value } }]);
-            const found = options.find((item) => item.value === value);
-            setStatus(`目标已设为 ${found ? found.label : value}`);
+        const inputStyle = {
+            flex: 1,
+            minWidth: 0,
+            height: 30,
+            padding: "0 9px",
+            borderRadius: 7,
+            border: `1px solid ${palette.node.stroke}`,
+            background: palette.node.panel,
+            color: palette.node.text,
+            fontSize: 12,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            outline: "none",
         };
 
+        const stack = { display: "flex", flexDirection: "column", gap: 10, width: "100%", padding: "4px 2px 8px" };
         const row = { display: "flex", gap: 8, alignItems: "center", width: "100%" };
-        const inputStyle = { flex: 1, minWidth: 200, height: 28, padding: "0 8px", borderRadius: 6, border: "1px solid #d9d9d9", fontSize: 12 };
 
         return h(
             "div",
-            { style: { width: "100%", padding: 12, display: "flex", flexDirection: "column", gap: 8 } },
-            h("div", { style: caption }, "邮筒跑在 DSH 那台机器的插件里；这里填它的地址（默认同名主机的 8799 端口）。"),
+            { style: { ...stack, color: palette.node.text, fontSize: 12, fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif' } },
+
+            // 连接
             h(
                 "div",
-                { style: row },
-                h("input", {
-                    value: draftBase,
-                    placeholder: DEFAULT_BASE,
-                    spellCheck: false,
-                    onChange: (event) => setDraftBase(event.target.value),
-                    style: inputStyle,
-                }),
-                h(Button, {
-                    size: "small",
-                    onClick: () => {
-                        const value = String(draftBase || "").trim().replace(/\/+$/, "");
-                        ctx.applyOps([{ type: "update_node", id: ctx.node.id, metadata: { bridgeBase: value } }]);
-                        setStatus(value ? `邮筒地址已设为 ${value}` : "已恢复默认地址");
-                    },
-                }, "保存地址"),
+                null,
+                h(SectionLabel, { palette }, "邮筒地址"),
+                h(
+                    "div",
+                    { style: row },
+                    h("input", {
+                        value: draftBase,
+                        placeholder: DEFAULT_BASE,
+                        spellCheck: false,
+                        onChange: (event) => setDraftBase(event.target.value),
+                        style: inputStyle,
+                    }),
+                    h(
+                        Button,
+                        {
+                            size: "small",
+                            onClick: () => {
+                                const value = String(draftBase || "").trim().replace(/\/+$/, "");
+                                ctx.applyOps([{ type: "update_node", id: ctx.node.id, metadata: { bridgeBase: value } }]);
+                                setStatus(value ? `已保存 ${value}` : "已恢复默认地址");
+                            },
+                        },
+                        "保存",
+                    ),
+                ),
+                h(
+                    "div",
+                    { style: { color: palette.node.faint, fontSize: 10, marginTop: 4 } },
+                    "邮筒在 DSH 那台机器的插件里；默认取同名主机的 8799 端口。",
+                ),
             ),
+
+            h(Divider, { palette }),
+
+            // 目标
             h(
                 "div",
-                { style: row },
-                h(Select, {
-                    style: { flex: 1, minWidth: 200 },
-                    placeholder: "选择接收提示词的节点",
-                    showSearch: true,
-                    optionFilterProp: "label",
-                    value: targetId || undefined,
-                    options,
-                    onChange: choose,
-                }),
-                h(Button, { size: "small", onClick: () => setTick((n) => n + 1) }, "刷新列表"),
+                null,
+                h(SectionLabel, { palette }, "写入目标"),
+                h(
+                    "div",
+                    { style: row },
+                    h(Select, {
+                        style: { flex: 1, minWidth: 0 },
+                        placeholder: "选择接收提示词的节点",
+                        showSearch: true,
+                        optionFilterProp: "label",
+                        value: targetId || undefined,
+                        options,
+                        onChange: (value) => {
+                            ctx.applyOps([{ type: "update_node", id: ctx.node.id, metadata: { bridgeTarget: value } }]);
+                            const found = options.find((item) => item.value === value);
+                            setStatus(`目标：${found ? found.label : value}`);
+                        },
+                    }),
+                    h(Button, { size: "small", onClick: () => setTick((n) => n + 1) }, "刷新"),
+                ),
             ),
+
+            h(Divider, { palette }),
+
+            // 行为
             h(
                 "div",
-                { style: row },
-                h("label", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" } },
+                null,
+                h(SectionLabel, { palette }, "写入后"),
+                h(
+                    "label",
+                    { style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 } },
                     h("input", {
                         type: "checkbox",
                         checked: autoRun,
                         onChange: () => {
                             ctx.applyOps([{ type: "update_node", id: ctx.node.id, metadata: { bridgeAutoRun: !autoRun } }]);
-                            setStatus(!autoRun ? "写入后会自动生成" : "写入后只写提示词");
+                            setStatus(!autoRun ? "写入后自动生成" : "写入后只写提示词");
                         },
+                        style: { width: 14, height: 14, accentColor: "#2563eb", cursor: "pointer" },
                     }),
-                    h("span", null, "写入后自动生成"),
+                    h("span", null, "自动生成"),
+                    h(
+                        "span",
+                        { style: { color: palette.node.faint, fontSize: 10 } },
+                        target
+                            ? GENERATION_MODES.has(target.type)
+                                ? `（${generationModeOf(target)}）`
+                                : "（该节点不支持）"
+                            : "（先选目标）",
+                    ),
                 ),
-                h("span", { style: { ...caption, color: "#1677ff" } }, target ? `模式：${generationModeOf(target) || "不支持"}` : ""),
             ),
+
+            // 队列操作
             h(
                 "div",
-                { style: row },
-                h(Button, {
-                    size: "small",
-                    onClick: async () => {
-                        try {
-                            const response = await fetch(`${bridgeBase}/health`, { cache: "no-store" });
-                            const data = await response.json();
-                            setStatus(`邮筒正常（${bridgeBase}），待处理 ${data.pending} 条`);
-                        } catch (error) {
-                            setStatus(`邮筒不可达：${bridgeBase}`);
-                        }
+                { style: { ...row, justifyContent: "space-between", marginTop: 2 } },
+                h(
+                    Button,
+                    {
+                        size: "small",
+                        onClick: async () => {
+                            try {
+                                const response = await fetch(`${bridgeBase}/health`, { cache: "no-store" });
+                                const data = await response.json();
+                                setStatus(`连通 · 待处理 ${data.pending} 条`);
+                            } catch (error) {
+                                setStatus(`不可达：${bridgeBase}`);
+                            }
+                        },
                     },
-                }, "测试邮筒"),
-                h(Button, {
-                    size: "small",
-                    danger: true,
-                    onClick: async () => {
-                        await fetch(`${bridgeBase}/clear`, { method: "POST" }).catch(() => undefined);
-                        setStatus("已清空邮筒队列");
+                    "测试",
+                ),
+                h(
+                    Button,
+                    {
+                        size: "small",
+                        danger: true,
+                        onClick: async () => {
+                            await fetch(`${bridgeBase}/clear`, { method: "POST" }).catch(() => undefined);
+                            setStatus("队列已清空");
+                        },
                     },
-                }, "清空队列"),
+                    "清空队列",
+                ),
             ),
-            status ? h("div", { style: { ...caption, color: "#1677ff" } }, status) : null,
+
+            status
+                ? h(
+                      "div",
+                      {
+                          style: {
+                              fontSize: 11,
+                              color: palette.node.muted,
+                              background: palette.node.fill,
+                              borderRadius: 6,
+                              padding: "5px 8px",
+                          },
+                      },
+                      status,
+                  )
+                : null,
         );
     }
 
     return {
         id: "prompt-bridge",
         name: "提示词桥",
-        version: "1.4.0",
-        description: "轮询 DSH 插件内置的提示词邮筒，写入你指定的画布节点，可选写入后自动生成。",
+        version: "2.0.0",
+        description: "轮询 DSH 插件内置的提示词邮筒，写入指定画布节点，可选写入后自动生成。",
         defaultEnabled: true,
         nodes: [
             {
                 type: NODE_TYPE,
                 title: "提示词桥",
-                icon: h("span", { style: { fontSize: 10, fontWeight: 700 } }, "BRG"),
-                defaultSize: { width: 300, height: 190 },
+                icon: h("span", { style: { fontSize: 10, fontWeight: 700, letterSpacing: "-.02em" } }, "BRG"),
+                defaultSize: { width: 300, height: 176 },
                 defaultMetadata: { bridgeAutoRun: true },
                 showInCreateMenu: true,
                 autoOpenPanel: true,
