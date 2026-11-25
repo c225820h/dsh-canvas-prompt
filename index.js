@@ -17,12 +17,12 @@ export const name = 'canvas-prompt'
 /** Services used by these tools. */
 export const inject = ['tools']
 
-const BUILTIN_BRIDGE = 'http://192.168.3.200:8799'
+const BUILTIN_BRIDGE = 'http://192.168.3.200:8190/api/canvas/prompt'
 
 export const Config = z.object({
   bridgeUrl: z
     .string()
-    .description('画布提示词桥地址，例如 http://192.168.3.200:8799；留空使用内置默认。')
+    .description('画布提示词邮筒地址，例如 http://192.168.3.200:8190/api/canvas/prompt；留空使用内置默认。')
     .default('')
     .volatile(),
 })
@@ -96,7 +96,7 @@ export function apply(ctx, config) {
       const prompt = String((args && args.prompt) || '').trim()
       if (!prompt) throw new Error('prompt must not be empty')
       const bridge = resolveBridge(args && args.bridge)
-      const data = await requestJson(`${bridge}/prompt`, {
+      const data = await requestJson(bridge, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text: prompt, target: String((args && args.target) || '').trim() }),

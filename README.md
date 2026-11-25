@@ -54,7 +54,7 @@ Resolution order: per-call `bridge` argument → `bridgeUrl` config → `CANVAS_
 
 ## Canvas-side setup
 
-1. Run the bridge on the canvas host (`prompt-bridge.mjs`, listening on 8799).
+1. The canvas gateway ships the prompt inbox (`POST /api/canvas/prompt`, `GET /api/canvas/prompt/queue`), so no separate bridge process is needed.
 2. In the canvas, create a **提示词桥** (`prompt-bridge`) node and pick the target node in its panel.
 3. Keep the canvas page open; prompts queue while it is closed and are written when it reopens.
 

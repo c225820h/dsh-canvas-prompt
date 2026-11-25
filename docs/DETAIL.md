@@ -10,7 +10,7 @@
 
 ```
 DSH 工具 canvas_prompt
-  → POST http://<画布主机>:8799/prompt
+  → POST http://<画布主机>:8190/api/canvas/prompt
     → 画布里的「提示词桥」插件轮询取走
       → 写入你在画布上选中的那个节点
         → 你点生成
@@ -39,7 +39,7 @@ DSH 工具 canvas_prompt
 
 ## 使用前提
 
-1. 画布主机上运行着提示词桥服务（`prompt-bridge.mjs`，监听 8799）。
+1. 画布网关内置了提示词邮筒（`POST /api/canvas/prompt`、`GET /api/canvas/prompt/queue`），不需要额外进程。
 2. 画布页面里放了一张「提示词桥」卡片，并在卡片面板里选好了接收提示词的节点。
 3. 画布页面开着（关闭时提示词会留在队列里，下次打开补写）。
 
