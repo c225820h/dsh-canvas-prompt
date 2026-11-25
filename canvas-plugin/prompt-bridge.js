@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.4.1";
+    const VERSION = "2.4.2";
     const POLL_MS = 1500;
     // 克隆新卡时剔掉的字段：上一轮的运行结果与任务状态。
     // 留着会让新卡顶着旧图、旧任务 ID 和旧错误，看起来像没生效。
@@ -302,7 +302,12 @@ export default function (runtime) {
                         } else {
                             spawned += 1;
                             const id = `bridge-${match.type}-${Date.now()}-${spawned}`;
-                            const gap = Math.round((match.height || 320) + 48);
+                            // 排布：从目标卡右下开始铺成网格。两个方向同时累加会斜着跑到几千像素外，
+                            // 九张卡一排到底又太宽，取 3 列折中。
+                            const stepX = Math.round((match.width || 320) + 48);
+                            const stepY = Math.round((match.height || 320) + 48);
+                            const col = (spawned - 1) % 3;
+                            const row = Math.floor((spawned - 1) / 3);
                             // 只继承配置，剥掉上一轮的结果与任务状态
                             const pristine = { ...(match.metadata || {}) };
                             RESULT_KEYS.forEach((key) => delete pristine[key]);
@@ -320,8 +325,8 @@ export default function (runtime) {
                                     nodeType: match.type,
                                     title: `${titleOf(match)} #${spawned + 1}`,
                                     position: {
-                                        x: (match.position?.x || 0) + gap * spawned,
-                                        y: (match.position?.y || 0) + gap * spawned,
+                                        x: (match.position?.x || 0) + stepX * (col + 1),
+                                        y: (match.position?.y || 0) + stepY * (row + 1),
                                     },
                                     width: match.width,
                                     height: match.height,
