@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.4.0";
+    const VERSION = "2.4.1";
     const POLL_MS = 1500;
     // 克隆新卡时剔掉的字段：上一轮的运行结果与任务状态。
     // 留着会让新卡顶着旧图、旧任务 ID 和旧错误，看起来像没生效。
@@ -136,6 +136,20 @@ export default function (runtime) {
         return list.filter(supportsWrite)[0] || null;
     }
 
+    /**
+     * 目标卡上游那张图片节点（靠连线提供的参考图）。
+     * 克隆出来的新卡用它共连同一张输入图，而不是各自复制一份图数据。
+     */
+    function upstreamImage(ctx, nodeId) {
+        const connections = ctx.getConnections?.() || [];
+        for (const connection of connections) {
+            if (connection.toNodeId !== nodeId || connection.role === "lineage") continue;
+            const source = ctx.getNode?.(connection.fromNodeId);
+            if (source && source.type === "image") return source;
+        }
+        return null;
+    }
+
     /** 按 id / 标题解一条消息里显式指定的目标（可选，用于临时改投）。 */
     function pickByHint(nodes, hint) {
         const raw = String(hint || "").trim();
@@ -150,7 +164,9 @@ export default function (runtime) {
     }
 
     function patchFor(node, text) {
-        return node && node.type === "text" ? { content: text } : { prompt: text };
+        // 生成卡的提示词按 composerContent ?? prompt 取值，空串不会回退到 prompt。
+        // 两个字段一起写，卡面才显示得出词，生成时也才取得到。
+        return node && node.type === "text" ? { content: text, prompt: text } : { prompt: text, composerContent: text };
     }
 
     /* ---------- 视觉零件 ---------- */
@@ -290,6 +306,13 @@ export default function (runtime) {
                             // 只继承配置，剥掉上一轮的结果与任务状态
                             const pristine = { ...(match.metadata || {}) };
                             RESULT_KEYS.forEach((key) => delete pristine[key]);
+                            // 图片卡的 content 是上一张图的数据（常为 base64）。复制九份，画布上就是
+                            // 九张一模一样的输入图，体积也翻九倍——生成卡不需要它。
+                            if (match.type !== "text") delete pristine.content;
+                            // 目标卡本来就靠连线取参考图时，去掉自带的 references，
+                            // 改成让九张新卡共连同一张输入图。
+                            const source = upstreamImage(current, match.id);
+                            if (source) delete pristine.references;
                             ops = [
                                 {
                                     type: "add_node",
@@ -305,6 +328,7 @@ export default function (runtime) {
                                     metadata: { ...pristine, ...patchFor(match, text) },
                                 },
                             ];
+                            if (source) ops.push({ type: "connect_nodes", fromNodeId: source.id, toNodeId: id });
                             if (mode) ops.push({ type: "run_generation", nodeId: id, mode });
                         }
 
