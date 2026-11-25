@@ -1,5 +1,7 @@
 # Canvas prompt bridge for DeepSeek Harness
 
+> 中文说明（DSH 侧与画布侧两套安装步骤分别写清）：[README.zh.md](./README.zh.md)
+
 Two halves that let you write a prompt in DeepSeek Harness and have it land in an [Infinite Canvas](https://github.com/basketikun/infinite-canvas) node on your LAN — with optional automatic generation.
 
 ```
