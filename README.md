@@ -42,7 +42,7 @@ Requires `@deepseek-ai/schemastery` (declared as a dependency; a Git install bri
 ## Use
 
 1. In DSH, ask the agent to send a prompt, or call the tool directly: `canvas_prompt { prompt }`.
-2. In the canvas, open the 「提示词桥」 card, set **邮筒地址** to the DSH host (for example `http://192.168.3.200:8799`), pick the target node, and leave **写入后自动生成** checked if you want the run to start immediately.
+2. In the canvas, open the 「提示词桥」 card and **connect it to the target node** — the connection is the target. Its **邮筒地址** defaults to `http://192.168.3.150:8799`; type another address in that field to override it. Leave **写入后自动生成** checked to start the run immediately.
 3. The card polls every 1.5 s; prompts queue in DSH if the page is closed and are written when it reopens.
 
 ## Tools

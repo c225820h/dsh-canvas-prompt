@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.5.0";
+    const VERSION = "2.5.1";
     /** 必须与 DSH 侧的 CONTRACT 一致；不一致就拒绝写入并提示。 */
     const CONTRACT = 1;
     const POLL_MS = 1500;
@@ -38,8 +38,8 @@ export default function (runtime) {
         "model3d",
         "stage3d",
     ];
-    const PAGE_HOST = (typeof window !== "undefined" && window.location && window.location.hostname) || "127.0.0.1";
-    const DEFAULT_BASE = `http://${PAGE_HOST}:8799`;
+    /** 默认邮筒：跑 DSH 插件的那台机器。面板里填地址可以覆盖。 */
+    const DEFAULT_BASE = "http://192.168.3.150:8799";
 
     const OK = "#16a34a";
     const BAD = "#dc2626";
@@ -246,6 +246,7 @@ export default function (runtime) {
         const [pending, setPending] = useState(0);
         const [queue, setQueue] = useState([]);
         const [mismatch, setMismatch] = useState(false);
+        const [legacy, setLegacy] = useState(false);
         const [last, setLast] = useState("");
 
         const ctxRef = useRef(ctx);
@@ -269,12 +270,19 @@ export default function (runtime) {
                     const response = await fetch(`${base}/queue`, { cache: "no-store" });
                     if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     const data = await response.json();
-                    if (Number(data && data.contract) !== CONTRACT) {
+                    const remoteContract = data ? data.contract : undefined;
+                    if (remoteContract === undefined || remoteContract === null) {
+                        // 旧版邮筒还没有 contract 字段：照常工作，只提示升级
+                        setLegacy(true);
+                        setMismatch(false);
+                    } else if (Number(remoteContract) !== CONTRACT) {
                         setConnected(false);
                         setMismatch(true);
                         return;
+                    } else {
+                        setLegacy(false);
+                        setMismatch(false);
                     }
-                    setMismatch(false);
                     const items = Array.isArray(data && data.items) ? data.items : [];
                     setConnected(true);
                     setPending(items.length);
@@ -424,8 +432,8 @@ export default function (runtime) {
                     h(Dot, { ok: connected }),
                     h(
                         "span",
-                        { style: { fontWeight: 700, fontSize: 12, color: mismatch ? WARN : connected ? OK : BAD, whiteSpace: "nowrap" } },
-                        mismatch ? "协议不匹配" : connected ? "已连接" : "未连接",
+                        { style: { fontWeight: 700, fontSize: 12, color: mismatch ? BAD : legacy ? WARN : connected ? OK : BAD, whiteSpace: "nowrap" } },
+                        mismatch ? "协议不匹配" : legacy ? "旧版邮筒" : connected ? "已连接" : "未连接",
                     ),
                     h(
                         "span",
