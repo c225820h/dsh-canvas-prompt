@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-canvas-prompt",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "private": true,
   "type": "module",
   "description": "Send prompts to the local Infinite Canvas prompt bridge; the DSH half and the canvas half share one wire contract.",

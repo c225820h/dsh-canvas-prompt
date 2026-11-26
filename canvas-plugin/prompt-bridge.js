@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.5.1";
+    const VERSION = "2.5.2";
     /** 必须与 DSH 侧的 CONTRACT 一致；不一致就拒绝写入并提示。 */
     const CONTRACT = 1;
     const POLL_MS = 1500;
@@ -542,11 +542,15 @@ export default function (runtime) {
         const [status, setStatus] = useState("");
         const [draftBase, setDraftBase] = useState("");
         const [queue, setQueue] = useState([]);
+        const [confirming, setConfirming] = useState(false);
 
         const meta = ctx.node?.metadata || {};
         const autoRun = meta.bridgeAutoRun !== false;
         const target = linkedTarget(ctx);
         const bridgeBase = baseOf(ctx.node);
+        const clones = (ctx.getNodes() || [])
+            .filter((node) => String(node.id).startsWith("bridge-"))
+            .map((node) => node.id);
 
         useEffect(() => {
             let stopped = false;
@@ -698,6 +702,52 @@ export default function (runtime) {
             ),
 
             // 队列
+            // 清理克隆卡
+            h(
+                Section,
+                { palette, label: "克隆卡", hint: `${clones.length} 张` },
+                h(
+                    "div",
+                    { style: { display: "flex", alignItems: "center", gap: 8, width: "100%", justifyContent: "space-between" } },
+                    h(
+                        Button,
+                        {
+                            size: "small",
+                            disabled: clones.length === 0,
+                            onClick: () => {
+                                ctx.applyOps([{ type: "select_nodes", ids: clones }]);
+                                setStatus(`已选中 ${clones.length} 张克隆卡`);
+                            },
+                        },
+                        "选中全部",
+                    ),
+                    h(
+                        Button,
+                        {
+                            size: "small",
+                            danger: true,
+                            disabled: clones.length === 0,
+                            onClick: () => {
+                                if (!confirming) {
+                                    setConfirming(true);
+                                    setStatus(`再点一次「确认删除」，会删掉 ${clones.length} 张克隆卡`);
+                                    return;
+                                }
+                                ctx.applyOps([{ type: "delete_node", ids: clones }]);
+                                setConfirming(false);
+                                setStatus(`已删除 ${clones.length} 张克隆卡`);
+                            },
+                        },
+                        confirming ? "确认删除" : "删除全部",
+                    ),
+                ),
+                h(
+                    "div",
+                    { style: { fontSize: 10, color: palette.node.faint, lineHeight: 1.4 } },
+                    "只删本插件克隆出来的卡（id 以 bridge- 开头）；你原来连的那张卡不动",
+                ),
+            ),
+
             h(
                 Section,
                 { palette, label: "队列", hint: `${queue.length} 条待取` },
