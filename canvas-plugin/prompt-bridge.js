@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.5.2";
+    const VERSION = "2.5.3";
     /** 必须与 DSH 侧的 CONTRACT 一致；不一致就拒绝写入并提示。 */
     const CONTRACT = 1;
     const POLL_MS = 1500;
@@ -139,17 +139,22 @@ export default function (runtime) {
     }
 
     /**
-     * 目标卡上游那张图片节点（靠连线提供的参考图）。
-     * 克隆出来的新卡用它共连同一张输入图，而不是各自复制一份图数据。
+     * 目标卡上游的全部图片节点（靠连线提供的参考图，可能有多张）。
+     * 克隆出来的新卡逐张共连同一批输入图，而不是只连第一张。
      */
-    function upstreamImage(ctx, nodeId) {
+    function upstreamImages(ctx, nodeId) {
         const connections = ctx.getConnections?.() || [];
+        const seen = new Set();
+        const sources = [];
         for (const connection of connections) {
             if (connection.toNodeId !== nodeId || connection.role === "lineage") continue;
             const source = ctx.getNode?.(connection.fromNodeId);
-            if (source && source.type === "image") return source;
+            if (source && source.type === "image" && !seen.has(source.id)) {
+                seen.add(source.id);
+                sources.push(source);
+            }
         }
-        return null;
+        return sources;
     }
 
     /** 按 id / 标题解一条消息里显式指定的目标（可选，用于临时改投）。 */
@@ -345,8 +350,8 @@ export default function (runtime) {
                             if (match.type !== "text") delete pristine.content;
                             // 目标卡本来就靠连线取参考图时，去掉自带的 references，
                             // 改成让九张新卡共连同一张输入图。
-                            const source = upstreamImage(current, match.id);
-                            if (source) delete pristine.references;
+                            const sources = upstreamImages(current, match.id);
+                            if (sources.length) delete pristine.references;
                             ops = [
                                 {
                                     type: "add_node",
@@ -362,7 +367,7 @@ export default function (runtime) {
                                     metadata: { ...pristine, ...patchFor(match, text) },
                                 },
                             ];
-                            if (source) ops.push({ type: "connect_nodes", fromNodeId: source.id, toNodeId: id });
+                            for (const source of sources) ops.push({ type: "connect_nodes", fromNodeId: source.id, toNodeId: id });
                             if (mode) ops.push({ type: "run_generation", nodeId: id, mode });
                         }
 
