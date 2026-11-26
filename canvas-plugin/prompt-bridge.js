@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.6.0";
+    const VERSION = "2.5.0";
     const POLL_MS = 1500;
     // 克隆新卡时剔掉的字段：上一轮的运行结果与任务状态。
     // 留着会让新卡顶着旧图、旧任务 ID 和旧错误，看起来像没生效。
@@ -161,20 +161,6 @@ export default function (runtime) {
             nodes.find((node) => titleOf(node).toLowerCase().includes(lower)) ||
             null
         );
-    }
-
-    /** 读 data URL 的自然尺寸，失败时返回 null（不阻断写入）。 */
-    function imageSizeOf(dataUrl) {
-        return new Promise((resolve) => {
-            try {
-                const img = new Image();
-                img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-                img.onerror = () => resolve(null);
-                img.src = dataUrl;
-            } catch {
-                resolve(null);
-            }
-        });
     }
 
     function patchFor(node, text) {
@@ -363,38 +349,6 @@ export default function (runtime) {
                             if (mode) ops.push({ type: "run_generation", nodeId: id, mode });
                         }
 
-                        // 带图：新建一张图片卡放在目标卡左侧，连到目标卡，并把目标切到 edit 模式
-                        if (item.image && match.type === "image") {
-                            const added = ops.find((op) => op.type === "add_node");
-                            const destId = added && added.id ? added.id : match.id;
-                            const size = await imageSizeOf(item.image);
-                            const width = (size && size.w) || 320;
-                            const height = (size && size.h) || 320;
-                            const imgId = `bridge-img-${Date.now()}-${handled + 1}`;
-                            ops.unshift(
-                                {
-                                    type: "add_node",
-                                    id: imgId,
-                                    nodeType: "image",
-                                    title: item.imageName || "参考图",
-                                    position: {
-                                        x: (match.position?.x || 0) - width - 48,
-                                        y: match.position?.y || 0,
-                                    },
-                                    width,
-                                    height,
-                                    metadata: {
-                                        content: item.image,
-                                        status: "success",
-                                        naturalWidth: width,
-                                        naturalHeight: height,
-                                    },
-                                },
-                                { type: "connect_nodes", fromNodeId: imgId, toNodeId: destId },
-                            );
-                            ops.push({ type: "update_node", id: destId, metadata: { imageMode: "edit" } });
-                        }
-
                         current.applyOps(ops);
                         if (reuse && clonePerItem) {
                             alreadySeeded = true;
@@ -534,7 +488,7 @@ export default function (runtime) {
                                       whiteSpace: "nowrap",
                                   },
                               },
-                              `#${item.id} ${item.image ? '🖼 ' : ''}${item.text}`,
+                              `#${item.id} ${item.text}`,
                           ),
                       ),
                       queue.length > 3 ? h("div", { style: { fontSize: 10, color: palette.node.faint } }, `还有 ${queue.length - 3} 条…`) : null,
@@ -748,7 +702,7 @@ export default function (runtime) {
                                           whiteSpace: "nowrap",
                                       },
                                   },
-                                  `#${item.id} ${item.image ? '🖼 ' : ''}${item.text}`,
+                                  `#${item.id} ${item.text}`,
                               ),
                           ),
                       )

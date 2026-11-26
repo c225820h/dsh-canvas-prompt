@@ -12,9 +12,7 @@
  * @module @local/dsh-canvas-prompt
  */
 
-import fs from 'node:fs'
 import http from 'node:http'
-import path from 'node:path'
 
 import z from '@deepseek-ai/schemastery'
 
@@ -48,39 +46,12 @@ const json = (res, status, body) => {
   res.end(JSON.stringify(body))
 }
 
-const IMAGE_MIME = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.bmp': 'image/bmp',
-}
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024
-
-/** Read a local image into a data URL the canvas can render directly. */
-function readImageDataUrl(rawPath) {
-  const input = String(rawPath || '').trim()
-  if (!input) return null
-  const abs = path.resolve(input)
-  let stat
-  try {
-    stat = fs.statSync(abs)
-  } catch {
-    throw new Error(`找不到图片：${abs}`)
-  }
-  if (!stat.isFile()) throw new Error(`不是文件：${abs}`)
-  if (stat.size > MAX_IMAGE_BYTES) throw new Error(`图片过大（${Math.round(stat.size / 1048576)}MB > 20MB）`)
-  const mime = IMAGE_MIME[path.extname(abs).toLowerCase()] || 'image/png'
-  return { dataUrl: `data:${mime};base64,${fs.readFileSync(abs).toString('base64')}`, name: path.basename(abs), bytes: stat.size }
-}
-
 const readBody = (req) =>
   new Promise((resolve, reject) => {
     let raw = ''
     req.on('data', (chunk) => {
       raw += chunk
-      if (raw.length > 32_000_000) reject(new Error('body too large'))
+      if (raw.length > 1_000_000) reject(new Error('body too large'))
     })
     req.on('end', () => resolve(raw))
     req.on('error', reject)
@@ -113,14 +84,7 @@ function createInboxServer() {
       }
       const text = String((payload && payload.text) || '').trim()
       if (!text) return json(res, 400, { ok: false, error: 'text is required' })
-      const image = payload && typeof payload.image === 'string' && payload.image.startsWith('data:image/') ? payload.image : ''
-      const item = {
-        id: (inbox.seq += 1),
-        target: String((payload && payload.target) || '').trim(),
-        text,
-        at: Date.now(),
-        ...(image ? { image, imageName: String((payload && payload.imageName) || '').slice(0, 120) } : {}),
-      }
+      const item = { id: (inbox.seq += 1), target: String((payload && payload.target) || '').trim(), text, at: Date.now() }
       inbox.items.push(item)
       while (inbox.items.length > MAX_ITEMS) inbox.items.shift()
       return json(res, 200, { ok: true, item, pending: inbox.items.length })
@@ -197,7 +161,6 @@ export function apply(ctx, config) {
     parameters: {
       prompt: { type: 'string', required: true, description: 'Prompt text to write into the canvas node.' },
       target: { type: 'string', description: 'Optional node title or node id in the canvas. Omit to use the node the user selected in the bridge card.' },
-      imagePath: { type: 'string', description: 'Absolute path to a local image on this machine. The canvas creates an image node for it and connects it to the target card as the reference, so edits need no manual wiring.' },
     },
     output: {
       schema: {
@@ -208,30 +171,19 @@ export function apply(ctx, config) {
           pending: { type: 'number', description: 'Queued prompts waiting for the canvas page, including this one.' },
           id: { type: 'number', description: 'Queue id of this prompt.' },
           port: { type: 'number', description: 'Inbox port the canvas card must poll.' },
-          image: { type: 'string', description: 'Attached reference image file name, empty when none.' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `已入队（#${value.id}，待处理 ${value.pending} 条）${value.image ? `，附带参考图 ${value.image}` : ''}。画布会写入你连线的节点${value.image ? '，并连上参考图' : ''}。` }],
+      render: (_args, value) => [{ type: 'text', text: `已入队（#${value.id}，待处理 ${value.pending} 条）。画布卡片轮询 :${value.port}，会写入你选中的节点。` }],
     },
     async execute(args) {
       const prompt = String((args && args.prompt) || '').trim()
       if (!prompt) throw new Error('prompt must not be empty')
-      const image = readImageDataUrl(args && args.imagePath)
       const data = await requestJson(`${local()}/prompt`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          text: prompt,
-          target: String((args && args.target) || '').trim(),
-          ...(image ? { image: image.dataUrl, imageName: image.name } : {}),
-        }),
+        body: JSON.stringify({ text: prompt, target: String((args && args.target) || '').trim() }),
       })
-      return {
-        pending: Number(data.pending) || 0,
-        id: Number(data.item && data.item.id) || 0,
-        port: listeningPort,
-        image: image ? image.name : '',
-      }
+      return { pending: Number(data.pending) || 0, id: Number(data.item && data.item.id) || 0, port: listeningPort }
     },
   })
 
