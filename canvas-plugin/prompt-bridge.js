@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.4.3";
+    const VERSION = "2.4.4";
     const POLL_MS = 1500;
     // 克隆新卡时剔掉的字段：上一轮的运行结果与任务状态。
     // 留着会让新卡顶着旧图、旧任务 ID 和旧错误，看起来像没生效。
@@ -278,16 +278,24 @@ export default function (runtime) {
                     // 这样连好的生成卡不会白等着不用，也不会被后续几条轮流覆盖。
                     // metadata.bridgeQueue 设为 "stack" 可退回旧行为（全部写同一张卡，后一条覆盖前一条）。
                     const clonePerItem = selfMeta.bridgeQueue !== "stack";
+                    const limitRaw = Number(selfMeta.bridgeBatch);
+                    const batchLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(10, Math.trunc(limitRaw)) : 3;
+                    let alreadySeeded = selfMeta.bridgeFirstDone === true;
                     const done = [];
                     const summary = [];
                     let handled = 0;
                     let spawned = 0;
 
-                    for (const item of items) {
+                    for (const item of items.slice(0, batchLimit)) {
                         // 目标：消息显式指定 > 画布连线
                         const match = (item.target ? pickByHint(all, item.target) : null) || linked || linkedTarget(current);
                         const text = String(item.text || "").trim();
                         if (!match || !text) {
+                            await fetch(`${base}/ack`, {
+                                method: "POST",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify({ ids: [item.id] }),
+                            }).catch(() => undefined);
                             done.push(item.id);
                             setLast(`跳过 #${item.id}：这张卡还没有连到目标节点`);
                             continue;
@@ -295,7 +303,7 @@ export default function (runtime) {
 
                         const mode = shouldRun ? generationModeOf(match) : "";
                         // 第一条落到连好的卡上，之后每一条各建一张新卡
-                        const reuse = !clonePerItem || handled === 0;
+                        const reuse = !clonePerItem || !alreadySeeded;
                         let ops;
 
                         if (reuse) {
@@ -340,8 +348,17 @@ export default function (runtime) {
                         }
 
                         current.applyOps(ops);
+                        if (reuse && clonePerItem) {
+                            alreadySeeded = true;
+                            current.applyOps([{ type: "update_node", id: current.node.id, metadata: { bridgeFirstDone: true } }]);
+                        }
                         handled += 1;
                         done.push(item.id);
+                        await fetch(`${base}/ack`, {
+                            method: "POST",
+                            headers: { "content-type": "application/json" },
+                            body: JSON.stringify({ ids: [item.id] }),
+                        }).catch(() => undefined);
                         summary.push(`#${item.id} ${reuse ? "写原卡" : "新建卡"}${mode ? " · 已排队生成" : ""}`);
                     }
 
@@ -349,14 +366,7 @@ export default function (runtime) {
                         setLast(summary.length > 1 ? `共 ${summary.length} 条：${summary.join("；")}` : summary[0]);
                     }
 
-                    if (done.length) {
-                        await fetch(`${base}/ack`, {
-                            method: "POST",
-                            headers: { "content-type": "application/json" },
-                            body: JSON.stringify({ ids: done }),
-                        }).catch(() => undefined);
-                        setPending((n) => Math.max(0, n - done.length));
-                    }
+                    if (done.length) setPending((n) => Math.max(0, items.length - done.length));
                 } catch {
                     setConnected(false);
                 } finally {
