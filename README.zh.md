@@ -171,3 +171,22 @@ canvas_prompt { prompt: "雨夜街口红裙女子，逆光，镜头浅景深" }
 ## 许可
 
 MIT
+
+## 版本匹配
+
+本仓库同时发布互相配合的两半，必须一起升级：
+
+| 半边 | 文件 | 版本 |
+|---|---|---|
+| DSH 侧（Host） | `index.js` | `package.json` 的 version |
+| 画布侧 | `canvas-plugin/prompt-bridge.js` | 文件内的 `VERSION` |
+
+两边都写着同一个 `CONTRACT = 1`，它是两边唯一的协议约定：
+
+```
+GET  /queue  -> { ok, contract, items: [{ id, target, text, at }], nextId }
+POST /prompt -> { text, target }        // DSH -> 邮筒
+POST /ack    -> { ids: [number] }       // 画布 -> 邮筒
+```
+
+协议不一致时，画布侧**拒绝写入并显示「协议不匹配」**，不会静默写错数据。改协议时必须在同一次提交里同时改两边的 `CONTRACT`、保持版本号一致，并且删功能时两半都删干净。

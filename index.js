@@ -21,6 +21,9 @@ export const name = 'canvas-prompt'
 /** Services used by these tools. */
 export const inject = ['tools']
 
+/** Wire contract shared with the canvas half; bump together on any protocol change. */
+const CONTRACT = 1
+
 const DEFAULT_PORT = 8799
 const MAX_ITEMS = 50
 
@@ -70,10 +73,10 @@ function createInboxServer() {
       return res.end()
     }
     if (req.method === 'GET' && url.pathname === '/health') {
-      return json(res, 200, { ok: true, pending: inbox.items.length })
+      return json(res, 200, { ok: true, contract: CONTRACT, pending: inbox.items.length })
     }
     if (req.method === 'GET' && url.pathname === '/queue') {
-      return json(res, 200, { ok: true, items: inbox.items, nextId: inbox.seq + 1 })
+      return json(res, 200, { ok: true, contract: CONTRACT, items: inbox.items, nextId: inbox.seq + 1 })
     }
     if (req.method === 'POST' && url.pathname === '/prompt') {
       let payload

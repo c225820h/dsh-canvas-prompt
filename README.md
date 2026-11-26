@@ -75,3 +75,22 @@ The canvas card holds the DSH address itself, because the page cannot infer whic
 ## License
 
 MIT
+
+## Compatibility
+
+This repository ships two halves that must be released together:
+
+| Half | File | Version |
+|---|---|---|
+| DSH plugin (Host) | `index.js` | `package.json` version |
+| Canvas plugin | `canvas-plugin/prompt-bridge.js` | `VERSION` in the file |
+
+Both carry the same `CONTRACT = 1` and it is the only wire contract between them:
+
+```
+GET  /queue  -> { ok, contract, items: [{ id, target, text, at }], nextId }
+POST /prompt -> { text, target }        // DSH -> inbox
+POST /ack    -> { ids: [number] }       // canvas -> inbox
+```
+
+The canvas half refuses to write and shows **协议不匹配** when the contract differs, so a stale copy on either side fails loudly instead of silently writing wrong data. Bump `CONTRACT` on both halves in the same commit whenever the protocol changes, keep both versions equal, and delete removed features from both sides.

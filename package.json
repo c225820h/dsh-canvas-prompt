@@ -1,28 +1,29 @@
 {
-    "name":  "@local/dsh-canvas-prompt",
-    "version":  "1.3.0",
-    "private":  true,
-    "type":  "module",
-    "description":  "Send prompts to the local Infinite Canvas prompt bridge, with a configurable bridge address.",
-    "files":  [
-                  "index.js",
-                  "cordis.patch.yml",
-                  "locale/*.json",
-                  "docs",
-                  "icon.svg",
-                  "README.zh.md"
-              ],
-    "dependencies":  {
-                         "@deepseek-ai/schemastery":  "~3.19.0"
-                     },
-    "exports":  {
-                    ".":  "./index.js",
-                    "./locale/*.json":  "./locale/*.json",
-                    "./icon":  "./icon.svg"
-                },
-    "dsh":  {
-                "bundle":  {
-                               "patch":  "./cordis.patch.yml"
-                           }
-            }
+  "name": "@local/dsh-canvas-prompt",
+  "version": "2.5.0",
+  "private": true,
+  "type": "module",
+  "description": "Send prompts to the local Infinite Canvas prompt bridge; the DSH half and the canvas half share one wire contract.",
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.zh.md",
+    "canvas-plugin"
+  ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
 }

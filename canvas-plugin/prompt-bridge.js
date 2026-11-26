@@ -8,6 +8,8 @@ export default function (runtime) {
 
     const NODE_TYPE = "prompt-bridge:card";
     const VERSION = "2.5.0";
+    /** 必须与 DSH 侧的 CONTRACT 一致；不一致就拒绝写入并提示。 */
+    const CONTRACT = 1;
     const POLL_MS = 1500;
     // 克隆新卡时剔掉的字段：上一轮的运行结果与任务状态。
     // 留着会让新卡顶着旧图、旧任务 ID 和旧错误，看起来像没生效。
@@ -243,6 +245,7 @@ export default function (runtime) {
         const [connected, setConnected] = useState(false);
         const [pending, setPending] = useState(0);
         const [queue, setQueue] = useState([]);
+        const [mismatch, setMismatch] = useState(false);
         const [last, setLast] = useState("");
 
         const ctxRef = useRef(ctx);
@@ -266,6 +269,12 @@ export default function (runtime) {
                     const response = await fetch(`${base}/queue`, { cache: "no-store" });
                     if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     const data = await response.json();
+                    if (Number(data && data.contract) !== CONTRACT) {
+                        setConnected(false);
+                        setMismatch(true);
+                        return;
+                    }
+                    setMismatch(false);
                     const items = Array.isArray(data && data.items) ? data.items : [];
                     setConnected(true);
                     setPending(items.length);
@@ -413,7 +422,11 @@ export default function (runtime) {
                     "div",
                     { style: { ...line, flex: "1 1 auto" } },
                     h(Dot, { ok: connected }),
-                    h("span", { style: { fontWeight: 700, fontSize: 12, color: connected ? OK : BAD, whiteSpace: "nowrap" } }, connected ? "已连接" : "未连接"),
+                    h(
+                        "span",
+                        { style: { fontWeight: 700, fontSize: 12, color: mismatch ? WARN : connected ? OK : BAD, whiteSpace: "nowrap" } },
+                        mismatch ? "协议不匹配" : connected ? "已连接" : "未连接",
+                    ),
                     h(
                         "span",
                         { style: { color: palette.node.faint, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
