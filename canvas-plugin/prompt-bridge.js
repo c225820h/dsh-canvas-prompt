@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.4.4";
+    const VERSION = "2.5.0";
     const POLL_MS = 1500;
     // 克隆新卡时剔掉的字段：上一轮的运行结果与任务状态。
     // 留着会让新卡顶着旧图、旧任务 ID 和旧错误，看起来像没生效。
@@ -242,6 +242,7 @@ export default function (runtime) {
         const palette = paletteOf(ctx.theme);
         const [connected, setConnected] = useState(false);
         const [pending, setPending] = useState(0);
+        const [queue, setQueue] = useState([]);
         const [last, setLast] = useState("");
 
         const ctxRef = useRef(ctx);
@@ -268,6 +269,7 @@ export default function (runtime) {
                     const items = Array.isArray(data && data.items) ? data.items : [];
                     setConnected(true);
                     setPending(items.length);
+                    setQueue(items.slice(0, 8));
                     if (!items.length) return;
 
                     const all = (current.getNodes?.() || []).filter(supportsWrite);
@@ -466,7 +468,34 @@ export default function (runtime) {
                 h("span", { style: { marginLeft: "auto", fontSize: 9, letterSpacing: ".06em", color: palette.node.faint, whiteSpace: "nowrap" } }, `v${VERSION}`),
             ),
 
-            // ④ 最近活动
+            // ④ 队列
+            queue.length
+                ? h(
+                      "div",
+                      { style: { display: "flex", flexDirection: "column", gap: 3, minHeight: 0 } },
+                      h("div", { style: { fontSize: 10, fontWeight: 700, letterSpacing: ".08em", color: palette.node.faint } }, `队列 ${pending}`),
+                      ...queue.slice(0, 3).map((item) =>
+                          h(
+                              "div",
+                              {
+                                  key: item.id,
+                                  title: item.text,
+                                  style: {
+                                      fontSize: 11,
+                                      color: palette.node.muted,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                  },
+                              },
+                              `#${item.id} ${item.text}`,
+                          ),
+                      ),
+                      queue.length > 3 ? h("div", { style: { fontSize: 10, color: palette.node.faint } }, `还有 ${queue.length - 3} 条…`) : null,
+                  )
+                : null,
+
+            // ⑤ 最近活动
             last
                 ? h(
                       "div",
@@ -491,11 +520,32 @@ export default function (runtime) {
         const palette = paletteOf(ctx.theme);
         const [status, setStatus] = useState("");
         const [draftBase, setDraftBase] = useState("");
+        const [queue, setQueue] = useState([]);
 
         const meta = ctx.node?.metadata || {};
         const autoRun = meta.bridgeAutoRun !== false;
         const target = linkedTarget(ctx);
         const bridgeBase = baseOf(ctx.node);
+
+        useEffect(() => {
+            let stopped = false;
+            const load = async () => {
+                try {
+                    const response = await fetch(`${bridgeBase}/queue`, { cache: "no-store" });
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    if (!stopped) setQueue(Array.isArray(data && data.items) ? data.items : []);
+                } catch {
+                    if (!stopped) setQueue([]);
+                }
+            };
+            load();
+            const timer = setInterval(load, 2000);
+            return () => {
+                stopped = true;
+                clearInterval(timer);
+            };
+        }, [bridgeBase]);
 
         useEffect(() => {
             setDraftBase(String((ctx.node?.metadata || {}).bridgeBase || ""));
@@ -626,6 +676,39 @@ export default function (runtime) {
                 ),
             ),
 
+            // 队列
+            h(
+                Section,
+                { palette, label: "队列", hint: `${queue.length} 条待取` },
+                queue.length
+                    ? h(
+                          "div",
+                          { style: { display: "flex", flexDirection: "column", gap: 4, maxHeight: 120, overflowY: "auto" } },
+                          ...queue.map((item) =>
+                              h(
+                                  "div",
+                                  {
+                                      key: item.id,
+                                      title: item.text,
+                                      style: {
+                                          fontSize: 11,
+                                          color: palette.node.text,
+                                          background: palette.node.panel,
+                                          border: `1px solid ${palette.node.stroke}`,
+                                          borderRadius: 6,
+                                          padding: "4px 7px",
+                                          overflow: "hidden",
+                                          textOverflow: "ellipsis",
+                                          whiteSpace: "nowrap",
+                                      },
+                                  },
+                                  `#${item.id} ${item.text}`,
+                              ),
+                          ),
+                      )
+                    : h("div", { style: { fontSize: 11, color: palette.node.faint } }, "队列为空"),
+            ),
+
             // 队列操作
             h(
                 "div",
@@ -693,7 +776,7 @@ export default function (runtime) {
                 type: NODE_TYPE,
                 title: "提示词桥",
                 icon: h("span", { style: { fontSize: 10, fontWeight: 700, letterSpacing: "-.02em" } }, "BRG"),
-                defaultSize: { width: 316, height: 168 },
+                defaultSize: { width: 316, height: 214 },
                 defaultMetadata: { bridgeAutoRun: true },
                 showInCreateMenu: true,
                 autoOpenPanel: true,
