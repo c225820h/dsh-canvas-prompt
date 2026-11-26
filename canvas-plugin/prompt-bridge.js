@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.5.4";
+    const VERSION = "2.5.5";
     /** 必须与 DSH 侧的 CONTRACT 一致；不一致就拒绝写入并提示。 */
     const CONTRACT = 1;
     const POLL_MS = 1500;
@@ -307,6 +307,8 @@ export default function (runtime) {
                     const summary = [];
                     let handled = 0;
                     let spawned = 0;
+                    // 已存在的克隆卡数量决定下一个网格格子，这样跨轮次建卡也不会叠在一起。
+                    let slot = (current.getNodes?.() || []).filter((node) => String(node.id).startsWith("bridge-")).length;
 
                     for (const item of items) {
                         // 目标：消息显式指定 > 画布连线
@@ -333,13 +335,14 @@ export default function (runtime) {
                             if (mode) ops.push({ type: "run_generation", nodeId: match.id, mode });
                         } else {
                             spawned += 1;
+                            slot += 1;
                             const id = `bridge-${match.type}-${Date.now()}-${spawned}`;
                             // 排布：从目标卡右下开始铺成网格。两个方向同时累加会斜着跑到几千像素外，
                             // 九张卡一排到底又太宽，取 3 列折中。
                             const stepX = Math.round((match.width || 320) + 48);
                             const stepY = Math.round((match.height || 320) + 48);
-                            const col = (spawned - 1) % 3;
-                            const row = Math.floor((spawned - 1) / 3);
+                            const col = (slot - 1) % 3;
+                            const row = Math.floor((slot - 1) / 3);
                             // 只继承配置，剥掉上一轮的结果与任务状态
                             const pristine = { ...(match.metadata || {}) };
                             RESULT_KEYS.forEach((key) => delete pristine[key]);
@@ -355,7 +358,7 @@ export default function (runtime) {
                                     type: "add_node",
                                     id,
                                     nodeType: match.type,
-                                    title: `${titleOf(match)} #${spawned + 1}`,
+                                    title: `${titleOf(match)} #${slot + 1}`,
                                     position: {
                                         x: (match.position?.x || 0) + stepX * (col + 1),
                                         y: (match.position?.y || 0) + stepY * (row + 1),
