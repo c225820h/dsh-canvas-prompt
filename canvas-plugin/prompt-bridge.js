@@ -7,7 +7,7 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.5.3";
+    const VERSION = "2.5.4";
     /** 必须与 DSH 侧的 CONTRACT 一致；不一致就拒绝写入并提示。 */
     const CONTRACT = 1;
     const POLL_MS = 1500;
@@ -302,15 +302,13 @@ export default function (runtime) {
                     // 这样连好的生成卡不会白等着不用，也不会被后续几条轮流覆盖。
                     // metadata.bridgeQueue 设为 "stack" 可退回旧行为（全部写同一张卡，后一条覆盖前一条）。
                     const clonePerItem = selfMeta.bridgeQueue !== "stack";
-                    const limitRaw = Number(selfMeta.bridgeBatch);
-                    const batchLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(10, Math.trunc(limitRaw)) : 3;
                     let alreadySeeded = selfMeta.bridgeFirstDone === true;
                     const done = [];
                     const summary = [];
                     let handled = 0;
                     let spawned = 0;
 
-                    for (const item of items.slice(0, batchLimit)) {
+                    for (const item of items) {
                         // 目标：消息显式指定 > 画布连线
                         const match = (item.target ? pickByHint(all, item.target) : null) || linked || linkedTarget(current);
                         const text = String(item.text || "").trim();
