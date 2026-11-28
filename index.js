@@ -12,7 +12,11 @@
  * @module @local/dsh-canvas-prompt
  */
 
+import { randomBytes } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import http from 'node:http'
+import { networkInterfaces } from 'node:os'
+import { extname } from 'node:path'
 
 import z from '@deepseek-ai/schemastery'
 
@@ -21,8 +25,83 @@ export const name = 'canvas-prompt'
 /** Services used by these tools. */
 export const inject = ['tools']
 
-/** Wire contract shared with the canvas half; bump together on any protocol change. */
-const CONTRACT = 1
+/**
+ * Wire contract shared with the canvas half; bump together on any protocol change.
+ * v2 adds `image` on /prompt items: the canvas half drops a reference image node
+ * upstream of the target card and wires it in before writing the prompt.
+ */
+const CONTRACT = 2
+
+/** Reference images served to the canvas: id -> { body, type, at }. */
+const images = new Map()
+const IMAGE_TTL_MS = 30 * 60 * 1000
+const MAX_IMAGES = 40
+const MIME_BY_EXT = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.avif': 'image/avif',
+}
+
+function sweepImages() {
+  const now = Date.now()
+  for (const [id, entry] of images) {
+    if (now - entry.at > IMAGE_TTL_MS) images.delete(id)
+  }
+  while (images.size > MAX_IMAGES) {
+    const oldest = images.keys().next()
+    if (oldest.done) break
+    images.delete(oldest.value)
+  }
+}
+
+/** First non-loopback IPv4, so the canvas (possibly on another machine) can fetch the image. */
+function lanAddress() {
+  for (const list of Object.values(networkInterfaces())) {
+    for (const entry of list || []) {
+      if (entry.family === 'IPv4' && !entry.internal) return entry.address
+    }
+  }
+  return '127.0.0.1'
+}
+
+/**
+ * Turn whatever the agent passed into a URL the canvas can load.
+ * Accepts an absolute local path, a data: URL, or an http(s) URL.
+ */
+async function stageImage(input, port) {
+  const raw = String(input || '').trim()
+  if (!raw) return null
+
+  let body
+  let type
+  let ext
+
+  if (/^data:/i.test(raw)) {
+    const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(raw)
+    if (!match) throw new Error('image: malformed data URL')
+    const mime = (match[1] || 'image/png').toLowerCase()
+    body = match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8')
+    type = mime
+    ext = Object.keys(MIME_BY_EXT).find((key) => MIME_BY_EXT[key] === mime) || '.png'
+  } else if (/^https?:\/\//i.test(raw)) {
+    // Already fetchable: let the canvas load it directly.
+    return { url: raw, name: raw.split('/').pop() || 'image', bytes: 0 }
+  } else {
+    body = await readFile(raw)
+    ext = extname(raw).toLowerCase() || '.png'
+    type = MIME_BY_EXT[ext] || 'image/png'
+    if (!MIME_BY_EXT[ext]) ext = '.png'
+  }
+
+  sweepImages()
+  const id = `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}${ext}`
+  images.set(id, { body, type, at: Date.now() })
+  return { url: `http://${lanAddress()}:${port}/img/${id}`, name: raw.split('/').pop() || id, bytes: body.length }
+}
 
 const DEFAULT_PORT = 8799
 const MAX_ITEMS = 50
@@ -75,6 +154,21 @@ function createInboxServer() {
     if (req.method === 'GET' && url.pathname === '/health') {
       return json(res, 200, { ok: true, contract: CONTRACT, pending: inbox.items.length })
     }
+    if (req.method === 'GET' && url.pathname.startsWith('/img/')) {
+      const id = url.pathname.slice('/img/'.length)
+      const entry = images.get(id)
+      if (!entry) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+        return res.end('image expired or unknown')
+      }
+      res.writeHead(200, {
+        'content-type': entry.type,
+        'content-length': entry.body.length,
+        'access-control-allow-origin': '*',
+        'cache-control': 'no-store',
+      })
+      return res.end(entry.body)
+    }
     if (req.method === 'GET' && url.pathname === '/queue') {
       return json(res, 200, { ok: true, contract: CONTRACT, items: inbox.items, nextId: inbox.seq + 1 })
     }
@@ -87,7 +181,14 @@ function createInboxServer() {
       }
       const text = String((payload && payload.text) || '').trim()
       if (!text) return json(res, 400, { ok: false, error: 'text is required' })
-      const item = { id: (inbox.seq += 1), target: String((payload && payload.target) || '').trim(), text, at: Date.now() }
+      const image = payload && payload.image && typeof payload.image === 'object' ? payload.image : null
+      const item = {
+        id: (inbox.seq += 1),
+        target: String((payload && payload.target) || '').trim(),
+        text,
+        ...(image && image.url ? { image: { url: String(image.url), name: String(image.name || ''), width: Number(image.width) || 0, height: Number(image.height) || 0 } } : {}),
+        at: Date.now(),
+      }
       inbox.items.push(item)
       while (inbox.items.length > MAX_ITEMS) inbox.items.shift()
       return json(res, 200, { ok: true, item, pending: inbox.items.length })
@@ -160,10 +261,16 @@ export function apply(ctx, config) {
 
   ctx.tools.register({
     name: 'canvas_prompt',
-    description: 'Queue a prompt for the Infinite Canvas. The canvas-side 提示词桥 card polls this plugin\'s in-process inbox and writes the prompt into the node the user selected there. Queue several prompts to send several.',
+    description:
+      'Queue a prompt for the Infinite Canvas. The canvas-side 提示词桥 card polls this plugin\'s in-process inbox and writes the prompt into the node the user selected there. Queue several prompts to send several. Pass `image` to also drop a reference image node on the canvas and wire it into the target node before the prompt runs.',
     parameters: {
       prompt: { type: 'string', required: true, description: 'Prompt text to write into the canvas node.' },
       target: { type: 'string', description: 'Optional node title or node id in the canvas. Omit to use the node the user selected in the bridge card.' },
+      image: {
+        type: 'string',
+        description:
+          'Optional reference image: an absolute local path (e.g. a DSH attachment), a data: URL, or an http(s) URL. The canvas adds an image node upstream of the target and connects it before writing the prompt.',
+      },
     },
     output: {
       schema: {
@@ -174,19 +281,38 @@ export function apply(ctx, config) {
           pending: { type: 'number', description: 'Queued prompts waiting for the canvas page, including this one.' },
           id: { type: 'number', description: 'Queue id of this prompt.' },
           port: { type: 'number', description: 'Inbox port the canvas card must poll.' },
+          imageUrl: { type: 'string', description: 'URL the canvas will load the reference image from, when one was attached.' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: `已入队（#${value.id}，待处理 ${value.pending} 条）。画布卡片轮询 :${value.port}，会写入你选中的节点。` }],
+      render: (_args, value) =>
+        [
+          {
+            type: 'text',
+            text: `已入队（#${value.id}，待处理 ${value.pending} 条）。画布卡片轮询 :${value.port}，会写入你选中的节点${
+              value.imageUrl ? '，并先把参考图建成图片卡连上去' : ''
+            }。`,
+          },
+        ],
     },
     async execute(args) {
       const prompt = String((args && args.prompt) || '').trim()
       if (!prompt) throw new Error('prompt must not be empty')
+      const staged = await stageImage(args && args.image, listeningPort)
       const data = await requestJson(`${local()}/prompt`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: prompt, target: String((args && args.target) || '').trim() }),
+        body: JSON.stringify({
+          text: prompt,
+          target: String((args && args.target) || '').trim(),
+          ...(staged ? { image: staged } : {}),
+        }),
       })
-      return { pending: Number(data.pending) || 0, id: Number(data.item && data.item.id) || 0, port: listeningPort }
+      return {
+        pending: Number(data.pending) || 0,
+        id: Number(data.item && data.item.id) || 0,
+        port: listeningPort,
+        ...(staged ? { imageUrl: staged.url } : {}),
+      }
     },
   })
 

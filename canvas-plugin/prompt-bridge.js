@@ -7,9 +7,9 @@ export default function (runtime) {
     const { Button } = antd || {};
 
     const NODE_TYPE = "prompt-bridge:card";
-    const VERSION = "2.5.5";
+    const VERSION = "2.6.0";
     /** 必须与 DSH 侧的 CONTRACT 一致；不一致就拒绝写入并提示。 */
-    const CONTRACT = 1;
+    const CONTRACT = 2;
     const POLL_MS = 1500;
     // 克隆新卡时剔掉的字段：上一轮的运行结果与任务状态。
     // 留着会让新卡顶着旧图、旧任务 ID 和旧错误，看起来像没生效。
@@ -157,9 +157,38 @@ export default function (runtime) {
         return sources;
     }
 
+    /**
+     * 参考图的卡片尺寸：按原始比例缩到 320 以内，取不到就退回方形占位。
+     * 只影响卡片外观，不影响生成时的实际分辨率。
+     */
+    function imageSizeOf(url, fallback = { width: 320, height: 320 }) {
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = (value) => {
+                if (settled) return;
+                settled = true;
+                resolve(value);
+            };
+            try {
+                const img = new Image();
+                img.onload = () => {
+                    const w = img.naturalWidth || 0;
+                    const h = img.naturalHeight || 0;
+                    if (!w || !h) return finish(fallback);
+                    const scale = Math.min(1, 320 / Math.max(w, h));
+                    finish({ width: Math.max(80, Math.round(w * scale)), height: Math.max(80, Math.round(h * scale)) });
+                };
+                img.onerror = () => finish(fallback);
+                img.src = url;
+                setTimeout(() => finish(fallback), 8000);
+            } catch {
+                finish(fallback);
+            }
+        });
+    }
+
     /** 按 id / 标题解一条消息里显式指定的目标（可选，用于临时改投）。 */
-    function pickByHint(nodes, hint) {
-        const raw = String(hint || "").trim();
+    function pickByHint(nodes, hint) {        const raw = String(hint || "").trim();
         if (!raw) return null;
         const lower = raw.toLowerCase();
         return (
@@ -329,6 +358,27 @@ export default function (runtime) {
                         // 第一条落到连好的卡上，之后每一条各建一张新卡
                         const reuse = !clonePerItem || !alreadySeeded;
                         let ops;
+
+                        // v2：先把参考图建成图片卡，再连到目标卡。图片卡 content 直接放 URL，
+                        // 画布遇到 http 地址会外链渲染，不进 IndexedDB。
+                        // 先 add 再 connect 分两次提交：同一批里新建的节点还没进图，连线会丢。
+                        if (item.image && item.image.url) {
+                            const size = await imageSizeOf(item.image.url);
+                            const imageId = `bridge-img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                            current.applyOps([
+                                {
+                                    type: "add_node",
+                                    id: imageId,
+                                    nodeType: "image",
+                                    title: `参考图 ${String(item.image.name || "").slice(0, 32)}`.trim(),
+                                    position: { x: (match.position?.x || 0) - size.width - 64, y: match.position?.y || 0 },
+                                    width: size.width,
+                                    height: size.height,
+                                    metadata: { content: item.image.url, status: "success", prompt: "" },
+                                },
+                            ]);
+                            current.applyOps([{ type: "connect_nodes", fromNodeId: imageId, toNodeId: match.id }]);
+                        }
 
                         if (reuse) {
                             ops = [{ type: "update_node", id: match.id, metadata: patchFor(match, text) }];
